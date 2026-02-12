@@ -1,4 +1,8 @@
 # Development Rules
+use `cm --help` our code intelligence tool better than grep
+use `mb --help` our lightweight local issue tracker
+use `cr --help` our context management tool for memories
+use `playwright-cli --help` the official playwright cli
 
 ## First Message
 If the user did not give you a concrete task in their first message,

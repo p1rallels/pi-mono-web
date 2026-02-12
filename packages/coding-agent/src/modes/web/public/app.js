@@ -23,13 +23,16 @@ const MOBILE_KEY_SEQUENCES = {
 	enter: "\r",
 };
 
-const TOUCH_SCROLL_PIXELS_PER_LINE = 14;
+const TOUCH_SCROLL_PIXELS_PER_LINE = 10;
 const TAP_FOCUS_THRESHOLD = 8;
-const MOMENTUM_MIN_START_VELOCITY = 0.035;
-const MOMENTUM_STOP_VELOCITY = 0.01;
-const MOMENTUM_MAX_VELOCITY = 2.4;
-const MOMENTUM_DECAY_PER_FRAME = 0.94;
-const MOMENTUM_BOOST = 2.5;
+const MOMENTUM_MIN_START_VELOCITY = 0.015;
+const MOMENTUM_STOP_VELOCITY = 0.004;
+const MOMENTUM_MAX_VELOCITY = 8.0;
+const MOMENTUM_BOOST = 4.0;
+const MOMENTUM_DECAY_SLOW = 0.99;
+const MOMENTUM_DECAY_FAST = 0.97;
+const MOMENTUM_DECAY_SPEED_THRESHOLD = 1.5;
+const VELOCITY_SAMPLE_WINDOW_MS = 80;
 const SCROLLBAR_GUTTER_PX = 26;
 const FRAME_DURATION_MS = 16.67;
 
@@ -232,7 +235,10 @@ function startMomentumScroll(initialVelocity) {
 		const deltaMs = Math.max(1, now - momentumLastTime);
 		momentumLastTime = now;
 
-		const decay = Math.pow(MOMENTUM_DECAY_PER_FRAME, deltaMs / FRAME_DURATION_MS);
+		const absV = Math.abs(momentumVelocity);
+		const t = Math.min(1, absV / MOMENTUM_DECAY_SPEED_THRESHOLD);
+		const frameDecay = MOMENTUM_DECAY_SLOW * (1 - t) + MOMENTUM_DECAY_FAST * t;
+		const decay = Math.pow(frameDecay, deltaMs / FRAME_DURATION_MS);
 		momentumVelocity *= decay;
 
 		if (Math.abs(momentumVelocity) < MOMENTUM_STOP_VELOCITY) {
@@ -375,11 +381,12 @@ function handleTouchStart(event) {
 	if (!mobileUiEnabled || event.touches.length !== 1) return;
 	stopMomentumScroll();
 	const touch = event.touches[0];
+	const now = performance.now();
 	touchSession = {
 		lastX: touch.clientX,
 		lastY: touch.clientY,
-		lastTime: performance.now(),
-		velocityY: 0,
+		lastTime: now,
+		samples: [{ y: touch.clientY, t: now }],
 		ignoreGesture: isScrollbarGestureStart(touch),
 		totalX: 0,
 		totalY: 0,
@@ -396,13 +403,15 @@ function handleTouchMove(event) {
 	const deltaX = touch.clientX - touchSession.lastX;
 	const deltaY = touch.clientY - touchSession.lastY;
 	const now = performance.now();
-	const deltaMs = Math.max(1, now - touchSession.lastTime);
-	const instantVelocityY = deltaY / deltaMs;
 
 	touchSession.lastX = touch.clientX;
 	touchSession.lastY = touch.clientY;
 	touchSession.lastTime = now;
-	touchSession.velocityY = touchSession.velocityY * 0.75 + instantVelocityY * 0.25;
+	touchSession.samples.push({ y: touch.clientY, t: now });
+	const cutoff = now - VELOCITY_SAMPLE_WINDOW_MS * 2;
+	while (touchSession.samples.length > 2 && touchSession.samples[0].t < cutoff) {
+		touchSession.samples.shift();
+	}
 	touchSession.totalX += deltaX;
 	touchSession.totalY += deltaY;
 
@@ -422,17 +431,32 @@ function handleTouchMove(event) {
 	}
 }
 
+function computeReleaseVelocity(samples) {
+	const now = performance.now();
+	const windowStart = now - VELOCITY_SAMPLE_WINDOW_MS;
+	let startIdx = samples.length - 1;
+	for (let i = samples.length - 1; i >= 0; i--) {
+		if (samples[i].t >= windowStart) startIdx = i;
+		else break;
+	}
+	const first = samples[startIdx];
+	const last = samples[samples.length - 1];
+	const dt = last.t - first.t;
+	if (dt < 5) return 0;
+	return (last.y - first.y) / dt;
+}
+
 function handleTouchEnd() {
 	if (!mobileUiEnabled || !touchSession) return;
-	const { totalX, totalY, didScroll, velocityY, ignoreGesture } = touchSession;
+	const { totalX, totalY, didScroll, samples, ignoreGesture } = touchSession;
 	touchSession = null;
 
 	if (ignoreGesture) return;
 
 	if (didScroll) {
-		const releaseVelocity = Math.abs(velocityY) >= MOMENTUM_MIN_START_VELOCITY ? velocityY : 0;
-		if (releaseVelocity !== 0 && Math.sign(releaseVelocity) === Math.sign(totalY || releaseVelocity)) {
-			startMomentumScroll(releaseVelocity * MOMENTUM_BOOST);
+		const velocityY = computeReleaseVelocity(samples);
+		if (Math.abs(velocityY) >= MOMENTUM_MIN_START_VELOCITY) {
+			startMomentumScroll(velocityY * MOMENTUM_BOOST);
 		}
 		return;
 	}

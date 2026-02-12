@@ -1,0 +1,6 @@
+- main [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e4]: pi web terminal
+    - generic [ref=e5]: connecting
+    - generic [ref=e6]: Waiting for terminal session...
+    - button "Reconnect" [ref=e7] [cursor=pointer]

@@ -1,0 +1,7 @@
+- main [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e4]: pi web terminal
+    - generic [ref=e5]: connected
+    - generic [ref=e6]: Connected to interactive pi session
+    - button "Reconnect" [ref=e7] [cursor=pointer]
+  - textbox "Terminal input" [active] [ref=e13]

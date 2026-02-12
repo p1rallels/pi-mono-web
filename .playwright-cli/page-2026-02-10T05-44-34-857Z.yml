@@ -1,0 +1,52 @@
+- main [ref=e2]:
+  - generic [ref=e3]:
+    - generic [ref=e4]: pi web terminal
+    - generic [ref=e5]: connected
+    - generic [ref=e6]: Connected to interactive pi session
+    - button "Reconnect" [ref=e7] [cursor=pointer]
+  - generic [ref=e12]:
+    - textbox "Terminal input" [active] [ref=e13]
+    - generic:
+      - generic:
+        - generic: "[Context]"
+      - generic:
+        - generic: ~/Desktop/cc/CLAUDE.md
+      - generic:
+        - generic: ~/Desktop/cc/pi-mono/AGENTS.md
+      - generic:
+        - generic: "[Prompts]"
+      - generic:
+        - generic: project
+      - generic:
+        - generic: /cl
+      - generic:
+        - generic: /is
+      - generic:
+        - generic: /pr
+      - generic:
+        - generic: "[Extensions]"
+      - generic:
+        - generic: project
+      - generic:
+        - generic: ~/Desktop/cc/pi-mono/.pi/extensions/agent-end.ts
+      - generic:
+        - generic: ~/Desktop/cc/pi-mono/.pi/extensions/diff.ts
+      - generic:
+        - generic: ~/Desktop/cc/pi-mono/.pi/extensions/files.ts
+      - generic:
+        - generic: ~/Desktop/cc/pi-mono/.pi/extensions/prompt-url-widget.ts
+      - generic:
+        - generic: ~/Desktop/cc/pi-mono/.pi/extensions/redraws.ts
+      - generic:
+        - generic: Reply with OK only
+      - generic:
+        - generic: ⠹
+        - generic: Working...
+      - generic:
+        - generic: ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+      - generic:
+        - generic: ─────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+      - generic:
+        - generic: ~/Desktop/cc/pi-mono (main)
+      - generic:
+        - generic: 0.0%/203k (auto) (openrouter) z-ai/glm-4.7 • high
