@@ -9,6 +9,7 @@ const panelSections = Array.from(document.querySelectorAll(".panel-section"));
 const panelStatusTextEl = document.getElementById("panel-status-text");
 const panelSyncBadgeEl = document.getElementById("panel-sync-badge");
 const panelSyncLabelEl = document.getElementById("panel-sync-label");
+const panelControlStatusEl = document.getElementById("panel-control-status");
 const panelActiveSessionEl = document.getElementById("panel-active-session");
 const panelStartSessionButton = document.getElementById("panel-start-session");
 const panelStopSessionButton = document.getElementById("panel-stop-session");
@@ -44,6 +45,7 @@ if (
 	!panelStatusTextEl ||
 	!panelSyncBadgeEl ||
 	!panelSyncLabelEl ||
+	!panelControlStatusEl ||
 	!panelActiveSessionEl ||
 	!panelStartSessionButton ||
 	!panelStopSessionButton ||
@@ -85,8 +87,8 @@ const MOMENTUM_DECAY_SPEED_THRESHOLD = 1.5;
 const VELOCITY_SAMPLE_WINDOW_MS = 80;
 const SCROLLBAR_GUTTER_PX = 26;
 const FRAME_DURATION_MS = 16.67;
-const SESSION_REHYDRATE_LIMIT = 220;
-const SESSION_REHYDRATE_MAX_PAGES = 400;
+const SESSION_REHYDRATE_LIMIT = 96_000;
+const SESSION_REHYDRATE_MAX_PAGES = 140;
 const MAX_REHYDRATE_CHECKPOINTS = 32;
 const SYNCING_STATUS_DELAY_MS = 380;
 const RECOVERED_STATUS_HOLD_MS = 1800;
@@ -119,6 +121,7 @@ let lockedMobileFontSize = null;
 let pinAnimationFrame = null;
 let pinnedViewportUntil = 0;
 let reconnectingManually = false;
+let reconnectClickLockUntil = 0;
 let momentumAnimationFrame = null;
 let momentumVelocity = 0;
 let momentumLastTime = 0;
@@ -133,6 +136,7 @@ let panelSavedSessions = [];
 let panelSavedSessionsSource = null;
 let panelSavedSessionsInFlight = null;
 let panelSyncInFlight = null;
+let panelSessionActionInFlight = false;
 let panelMessageTimeout = null;
 let panelTransientMessage = null;
 let serverReplayGate = null;
@@ -140,6 +144,10 @@ let serverReplayGateCounter = 0;
 let panelSessionSyncState = "live";
 let panelSessionSyncTimer = null;
 let panelLastRestoreMeta = null;
+let panelControlMode = "controller";
+let panelControlReason = null;
+let clientOwnershipId = null;
+let socketGenerationCounter = 0;
 const rehydrateCheckpoints = new Map();
 
 const DEBUG_MODE = (() => {
@@ -221,6 +229,9 @@ function setStatus(state) {
 	if (panelHostState) {
 		panelHostState = { ...panelHostState, connected: isConnected, state: statusLabel(state) };
 		renderPanel();
+	}
+	if (!isConnected) {
+		setPanelControlState("detached", "Socket disconnected");
 	}
 }
 
@@ -319,6 +330,12 @@ function setPanelSessionSyncState(state, options = {}) {
 		}, holdMs);
 	}
 
+	renderPanel();
+}
+
+function setPanelControlState(mode, reason = null) {
+	panelControlMode = mode === "detached" ? "detached" : "controller";
+	panelControlReason = typeof reason === "string" && reason.length > 0 ? reason : null;
 	renderPanel();
 }
 
@@ -602,9 +619,19 @@ function renderPanel() {
 	if (activeSession) {
 		const modelLabel = activeSession.model ? `${activeSession.provider || "default"}/${activeSession.model}` : activeSession.provider || "default";
 		panelActiveSessionEl.textContent = `${activeSession.cwd} • ${modelLabel}`;
+		const ownerId =
+			typeof activeSession.attachOwnerClientId === "string" && activeSession.attachOwnerClientId.length > 0
+				? activeSession.attachOwnerClientId
+				: null;
+		if (ownerId && clientOwnershipId && ownerId !== clientOwnershipId) {
+			panelControlMode = "detached";
+			panelControlReason = "Another client controls this session";
+		}
 	} else {
 		panelActiveSessionEl.textContent = "No active session";
 	}
+	const controlStatus = panelControlMode === "detached" ? "detached" : "controller";
+	panelControlStatusEl.textContent = panelControlReason ? `Control: ${controlStatus} (${panelControlReason})` : `Control: ${controlStatus}`;
 
 	if (hostState.launchDefaults) {
 		if (document.activeElement !== panelProviderInput) {
@@ -622,8 +649,9 @@ function renderPanel() {
 		: "No repo selected.";
 
 	const hasActiveSession = Boolean(activeSession);
-	panelStopSessionButton.disabled = !hasActiveSession;
-	panelRestartSessionButton.disabled = !hasActiveSession;
+	panelStartSessionButton.disabled = panelSessionActionInFlight;
+	panelStopSessionButton.disabled = !hasActiveSession || panelSessionActionInFlight;
+	panelRestartSessionButton.disabled = !hasActiveSession || panelSessionActionInFlight;
 
 	renderPanelProjects();
 	renderPanelRecent();
@@ -697,6 +725,9 @@ async function syncSavedSessions(force = false) {
 }
 
 async function startSessionFromPanel(overrides = {}) {
+	if (panelSessionActionInFlight) return;
+	panelSessionActionInFlight = true;
+	renderPanel();
 	const gateId = openServerReplayGate();
 	const payload = {
 		...launchPayloadFromInputs(),
@@ -721,10 +752,16 @@ async function startSessionFromPanel(overrides = {}) {
 	} catch (error) {
 		flushServerReplayGate(gateId);
 		setPanelNotice(panelErrorMessage(error, "Failed to start session"));
+	} finally {
+		panelSessionActionInFlight = false;
+		renderPanel();
 	}
 }
 
 async function stopSessionFromPanel() {
+	if (panelSessionActionInFlight) return;
+	panelSessionActionInFlight = true;
+	renderPanel();
 	try {
 		await fetchJson("/api/web/session/stop", {
 			method: "POST",
@@ -736,10 +773,16 @@ async function stopSessionFromPanel() {
 		await syncSavedSessions(true);
 	} catch (error) {
 		setPanelNotice(panelErrorMessage(error, "Failed to stop session"));
+	} finally {
+		panelSessionActionInFlight = false;
+		renderPanel();
 	}
 }
 
 async function restartSessionFromPanel() {
+	if (panelSessionActionInFlight) return;
+	panelSessionActionInFlight = true;
+	renderPanel();
 	const gateId = openServerReplayGate();
 	try {
 		await fetchJson("/api/web/session/restart", {
@@ -754,6 +797,9 @@ async function restartSessionFromPanel() {
 	} catch (error) {
 		flushServerReplayGate(gateId);
 		setPanelNotice(panelErrorMessage(error, "Failed to restart session"));
+	} finally {
+		panelSessionActionInFlight = false;
+		renderPanel();
 	}
 }
 
@@ -850,6 +896,9 @@ function clearReconnectTimer() {
 
 function sendMessage(message) {
 	if (!socket || socket.readyState !== WebSocket.OPEN) return;
+	if (message && message.type === "input" && panelControlMode !== "controller") {
+		return;
+	}
 	socket.send(JSON.stringify(message));
 }
 
@@ -1071,6 +1120,15 @@ function applyServerMessage(message) {
 		return;
 	}
 
+	if (message.type === "ownership" && typeof message.mode === "string") {
+		if (typeof message.clientId === "string" && message.clientId.length > 0) {
+			clientOwnershipId = message.clientId;
+		}
+		const reason = typeof message.reason === "string" ? message.reason : null;
+		setPanelControlState(message.mode === "controller" ? "controller" : "detached", reason);
+		return;
+	}
+
 	if (message.type === "error" && typeof message.message === "string") {
 		terminal.writeln(`\r\n[host error] ${message.message}\r\n`);
 	}
@@ -1093,6 +1151,7 @@ function flushServerReplayGate(gateId) {
 }
 
 async function streamRehydrateForSession(sessionPath, gateId, options = {}) {
+	const sessionId = typeof options.sessionId === "string" && options.sessionId.length > 0 ? options.sessionId : null;
 	let cursor = asNonNegativeInteger(options.startCursor) ?? 0;
 	let revision = null;
 	let pageCount = 0;
@@ -1120,11 +1179,21 @@ async function streamRehydrateForSession(sessionPath, gateId, options = {}) {
 			return null;
 		}
 
-		const response = await fetchJson(
-			`/api/web/session/rehydrate?sessionPath=${encodeURIComponent(sessionPath)}&cursor=${cursor}&limit=${SESSION_REHYDRATE_LIMIT}`,
-		);
+		const params = new URLSearchParams();
+		params.set("cursor", `${cursor}`);
+		params.set("limit", `${SESSION_REHYDRATE_LIMIT}`);
+		if (sessionPath) {
+			params.set("sessionPath", sessionPath);
+		}
+		if (sessionId) {
+			params.set("sessionId", sessionId);
+		}
+		const response = await fetchJson(`/api/web/session/rehydrate?${params.toString()}`);
 		if (!response || typeof response !== "object") {
 			return null;
+		}
+		if (response.source && response.source !== "journal") {
+			throw new Error("Unexpected replay source. Expected journal replay.");
 		}
 
 		const responseCursor = asNonNegativeInteger(response.cursor);
@@ -1145,7 +1214,7 @@ async function streamRehydrateForSession(sessionPath, gateId, options = {}) {
 			}
 		}
 
-		const totalEntries = asNonNegativeInteger(response.totalEntries);
+		const totalEntries = asNonNegativeInteger(response.totalBytes ?? response.totalEntries);
 		if (totalEntries !== null && cursor > totalEntries) {
 			restartFromZero("cursor_gt_total");
 			continue;
@@ -1179,15 +1248,17 @@ async function finalizeServerReplayGate(gateId, options = {}) {
 	if (!gate || gate.id !== gateId) return;
 
 	const activeSession = panelHostState && panelHostState.activeSession ? panelHostState.activeSession : null;
+	const sessionId = typeof activeSession?.id === "string" && activeSession.id.length > 0 ? activeSession.id : null;
 	const sessionPath = normalizeSessionPathValue(activeSession ? activeSession.sessionPath : null);
+	const checkpointKey = sessionId || sessionPath;
 	const shouldRehydrate =
-		Boolean(sessionPath) &&
+		Boolean(checkpointKey) &&
 		activeSession.outputTruncated === true;
 
 	if (shouldRehydrate) {
 		const fallbackQueue = gate.queue.slice();
 		gate.queue = [];
-		const checkpoint = getRehydrateCheckpoint(sessionPath);
+		const checkpoint = checkpointKey ? getRehydrateCheckpoint(checkpointKey) : null;
 		const useIncremental = options.forceFull !== true && checkpoint !== null;
 		let syncingShown = false;
 		const syncingTimer = window.setTimeout(() => {
@@ -1197,12 +1268,13 @@ async function finalizeServerReplayGate(gateId, options = {}) {
 		const startAt = Date.now();
 		try {
 			const checkpointResult = await streamRehydrateForSession(sessionPath, gateId, {
+				sessionId,
 				startCursor: useIncremental ? checkpoint.cursor : 0,
 				resetTerminal: !useIncremental,
 			});
 			window.clearTimeout(syncingTimer);
-			if (checkpointResult && asNonNegativeInteger(checkpointResult.cursor) !== null) {
-				setRehydrateCheckpoint(sessionPath, checkpointResult);
+			if (checkpointResult && checkpointKey && asNonNegativeInteger(checkpointResult.cursor) !== null) {
+				setRehydrateCheckpoint(checkpointKey, checkpointResult);
 			}
 			const durationMs = Math.max(0, Date.now() - startAt);
 			const fallbackToFull = Boolean(useIncremental && checkpointResult && checkpointResult.didReset === true);
@@ -1238,6 +1310,10 @@ async function finalizeServerReplayGate(gateId, options = {}) {
 function handleServerMessage(rawData) {
 	const message = parseServerMessage(rawData);
 	if (!message) return;
+	if (message.type === "ownership") {
+		applyServerMessage(message);
+		return;
+	}
 	if (serverReplayGate) {
 		serverReplayGate.queue.push(message);
 		return;
@@ -1249,13 +1325,19 @@ function connect() {
 	clearReconnectTimer();
 	setStatus("connecting");
 
+	socketGenerationCounter += 1;
+	const socketGeneration = socketGenerationCounter;
 	const wsUrl = socketUrl();
 	const nextSocket = new WebSocket(wsUrl);
 	socket = nextSocket;
 
 	nextSocket.addEventListener("open", () => {
+		if (socket !== nextSocket || socketGeneration !== socketGenerationCounter) {
+			return;
+		}
 		reconnectingManually = false;
 		setStatus("connected");
+		setPanelControlState("controller");
 		const gateId = openServerReplayGate();
 		sendResize();
 		void syncPanelState(true).then(async () => {
@@ -1264,11 +1346,18 @@ function connect() {
 	});
 
 	nextSocket.addEventListener("message", (event) => {
+		if (socket !== nextSocket || socketGeneration !== socketGenerationCounter) {
+			return;
+		}
 		const raw = typeof event.data === "string" ? event.data : "";
 		handleServerMessage(raw);
 	});
 
 	nextSocket.addEventListener("close", () => {
+		if (socket !== nextSocket || socketGeneration !== socketGenerationCounter) {
+			return;
+		}
+		socket = null;
 		serverReplayGate = null;
 		if (reconnectingManually) {
 			reconnectingManually = false;
@@ -1279,6 +1368,9 @@ function connect() {
 	});
 
 	nextSocket.addEventListener("error", () => {
+		if (socket !== nextSocket || socketGeneration !== socketGenerationCounter) {
+			return;
+		}
 		// Errors are followed by close; reconnect is handled there.
 	});
 }
@@ -1403,9 +1495,18 @@ terminal.onData((data) => {
 });
 
 reconnectButton.addEventListener("click", () => {
+	const now = Date.now();
+	if (now < reconnectClickLockUntil) {
+		return;
+	}
+	reconnectClickLockUntil = now + 350;
 	clearReconnectTimer();
+	setPanelControlState("detached", "Reconnecting");
 
 	if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+		if (reconnectingManually) {
+			return;
+		}
 		reconnectingManually = true;
 		try {
 			socket.close(1000, "manual reconnect");

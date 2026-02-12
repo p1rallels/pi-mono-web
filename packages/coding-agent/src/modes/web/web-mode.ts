@@ -8,7 +8,7 @@
 import { spawn as spawnProcess } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { access, chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { access, appendFile, chmod, mkdir, open, readFile, stat, writeFile } from "node:fs/promises";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createRequire } from "node:module";
 import { homedir } from "node:os";
@@ -18,7 +18,7 @@ import chalk from "chalk";
 import * as nodePty from "node-pty";
 import * as ws from "ws";
 import { getAgentDir } from "../../config.js";
-import { type SessionEntry, SessionManager, type SessionMessageEntry } from "../../core/session-manager.js";
+import { SessionManager } from "../../core/session-manager.js";
 
 type WebSessionState = "starting" | "running" | "stopped";
 
@@ -63,12 +63,20 @@ interface WebServerResetMessage {
 	type: "reset";
 }
 
+interface WebServerOwnershipMessage {
+	type: "ownership";
+	mode: "controller" | "detached";
+	clientId: string;
+	reason?: string;
+}
+
 type WebServerToClientMessage =
 	| WebServerOutputMessage
 	| WebServerStatusMessage
 	| WebServerErrorMessage
 	| WebServerPongMessage
-	| WebServerResetMessage;
+	| WebServerResetMessage
+	| WebServerOwnershipMessage;
 
 interface ResolvedChildInvocation {
 	command: string;
@@ -129,6 +137,12 @@ interface WebActiveSession {
 	startedAt: string;
 	outputChars: number;
 	outputTruncated: boolean;
+	attachOwnerClientId: string | null;
+	journal: {
+		bytes: number;
+		truncated: boolean;
+		generation: number;
+	};
 }
 
 interface WebHostStateResponse {
@@ -137,6 +151,10 @@ interface WebHostStateResponse {
 	connected: boolean;
 	launchDefaults: WebLaunchDefaults;
 	activeSession: WebActiveSession | null;
+	capabilities: {
+		takeoverAttach: boolean;
+		mirrorAttach: boolean;
+	};
 }
 
 interface WebProjectCreateRequest {
@@ -172,6 +190,11 @@ interface WebRunningSession {
 	pty: nodePty.IPty;
 	outputBuffer: string;
 	outputTruncated: boolean;
+	journalPath: string;
+	journalGeneration: number;
+	journalBytes: number;
+	journalTruncated: boolean;
+	journalWriteQueue: Promise<void>;
 }
 
 interface WebSessionRehydrateResponse {
@@ -180,9 +203,12 @@ interface WebSessionRehydrateResponse {
 	leafId: string | null;
 	revision: string;
 	totalEntries: number;
+	totalBytes: number;
 	cursor: number;
 	nextCursor: number | null;
 	text: string;
+	source: "journal";
+	generation: number;
 }
 
 const DEFAULT_HOST = "127.0.0.1";
@@ -192,8 +218,8 @@ const MAX_BUFFER_CHARS = 250_000;
 const MAX_REQUEST_BYTES = 1_000_000;
 const MAX_RECENT_SESSIONS = 80;
 const STORE_VERSION = 1;
-const DEFAULT_REHYDRATE_LIMIT = 220;
-const MAX_REHYDRATE_LIMIT = 2000;
+const DEFAULT_REHYDRATE_LIMIT = 96_000;
+const MAX_REHYDRATE_LIMIT = 1_000_000;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -614,150 +640,6 @@ function normalizeSessionPath(value: string | undefined): string | undefined {
 	return resolve(expandHomePath(normalized));
 }
 
-function normalizeMessageText(value: unknown): string {
-	if (typeof value === "string") {
-		return value.trim();
-	}
-	if (!Array.isArray(value)) {
-		return "";
-	}
-	const chunks: string[] = [];
-	for (const block of value) {
-		if (!isRecord(block) || typeof block.type !== "string") continue;
-		if (block.type === "text" && typeof block.text === "string") {
-			chunks.push(block.text.trim());
-		}
-		if (block.type === "thinking" && typeof block.thinking === "string") {
-			chunks.push(`[thinking] ${block.thinking.trim()}`);
-		}
-	}
-	return chunks.filter((entry) => entry.length > 0).join("\n");
-}
-
-function rolePrefix(role: string): string {
-	if (role === "assistant") return "assistant";
-	if (role === "toolResult") return "tool";
-	if (role === "bashExecution") return "bash";
-	if (role === "custom") return "custom";
-	if (role === "branchSummary") return "branch";
-	if (role === "compactionSummary") return "compaction";
-	return "user";
-}
-
-function renderMessageEntryText(entry: SessionMessageEntry, toolCallNames: Map<string, string>): string {
-	const message = entry.message;
-	const role = rolePrefix(message.role);
-	const lines: string[] = [];
-	const text = normalizeMessageText(isRecord(message) ? (message as { content?: unknown }).content : undefined);
-	if (text.length > 0) {
-		lines.push(`${role}: ${text}`);
-	}
-
-	if (message.role === "assistant" && Array.isArray(message.content)) {
-		for (const block of message.content) {
-			if (!isRecord(block) || typeof block.type !== "string") continue;
-			if (block.type === "toolCall" && typeof block.id === "string" && typeof block.name === "string") {
-				toolCallNames.set(block.id, block.name);
-				const serializedArgs =
-					block.arguments === undefined
-						? ""
-						: (() => {
-								try {
-									return ` ${JSON.stringify(block.arguments)}`;
-								} catch {
-									return "";
-								}
-							})();
-				lines.push(`tool call: ${block.name}${serializedArgs}`);
-			}
-		}
-
-		if (message.stopReason === "aborted") {
-			lines.push("assistant: [aborted]");
-		}
-		if (message.stopReason === "error" && typeof message.errorMessage === "string") {
-			lines.push(`assistant error: ${message.errorMessage}`);
-		}
-	}
-
-	if (message.role === "toolResult") {
-		const toolNameFromCall =
-			typeof message.toolCallId === "string" ? toolCallNames.get(message.toolCallId) : undefined;
-		const toolName =
-			(typeof message.toolName === "string" && message.toolName.trim().length > 0
-				? message.toolName
-				: toolNameFromCall) ?? "tool";
-		if (lines.length === 0) {
-			lines.push(`[${toolName}]`);
-		}
-		if (message.isError) {
-			lines.push(`[${toolName}] result marked as error`);
-		}
-	}
-
-	if (message.role === "bashExecution") {
-		const command = typeof message.command === "string" ? message.command.trim() : "";
-		const output = typeof message.output === "string" ? message.output : "";
-		if (command.length > 0) {
-			lines.push(`$ ${command}`);
-		}
-		if (output.trim().length > 0) {
-			lines.push(output.trimEnd());
-		}
-		if (typeof message.exitCode === "number") {
-			lines.push(`(exit ${message.exitCode})`);
-		}
-		if (message.cancelled) {
-			lines.push("(cancelled)");
-		}
-		if (message.truncated) {
-			lines.push("(truncated)");
-		}
-	}
-
-	if (message.role === "custom" && lines.length === 0) {
-		lines.push("custom message");
-	}
-
-	if (lines.length === 0) {
-		lines.push(`${role}: [no text]`);
-	}
-	return `${lines.join("\r\n")}\r\n\r\n`;
-}
-
-function renderSessionEntryText(entry: SessionEntry, toolCallNames: Map<string, string>): string {
-	if (entry.type === "message") {
-		return renderMessageEntryText(entry, toolCallNames);
-	}
-	if (entry.type === "compaction") {
-		return `[compaction]\r\n${entry.summary.trim()}\r\n\r\n`;
-	}
-	if (entry.type === "branch_summary") {
-		return `[branch summary]\r\n${entry.summary.trim()}\r\n\r\n`;
-	}
-	if (entry.type === "custom_message") {
-		const text = normalizeMessageText(entry.content);
-		if (text.length === 0) return "";
-		return `custom: ${text}\r\n\r\n`;
-	}
-	if (entry.type === "model_change") {
-		return `[model] ${entry.provider}/${entry.modelId}\r\n\r\n`;
-	}
-	if (entry.type === "thinking_level_change") {
-		return `[thinking] ${entry.thinkingLevel}\r\n\r\n`;
-	}
-	return "";
-}
-
-function buildRehydrateText(entries: SessionEntry[]): string {
-	const toolCallNames = new Map<string, string>();
-	let output = "";
-	for (const entry of entries) {
-		output += renderSessionEntryText(entry, toolCallNames);
-	}
-	return output;
-}
-
 export async function runWebMode(options: WebModeOptions): Promise<void> {
 	const host = options.host ?? DEFAULT_HOST;
 	const port = options.port ?? DEFAULT_PORT;
@@ -778,7 +660,9 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 	const webStoreDir = join(getAgentDir(), "web-mode");
 	const projectsStorePath = join(webStoreDir, "projects.json");
 	const recentStorePath = join(webStoreDir, "recent-sessions.json");
+	const journalStoreDir = join(webStoreDir, "journals");
 	await ensureDirectory(webStoreDir);
+	await ensureDirectory(journalStoreDir);
 
 	let launchDefaults = extractLaunchDefaults(baseChildArgs);
 	const projects = asProjects(await readJsonFile(projectsStorePath));
@@ -788,6 +672,7 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 	let sessionReason: string | undefined;
 	let outputBuffer = "";
 	let activeClient: ws.WebSocket | null = null;
+	let activeClientId: string | null = null;
 	let ptyProcess: nodePty.IPty | null = null;
 	const runningSessions = new Map<string, WebRunningSession>();
 	let latestClientCols = 120;
@@ -831,6 +716,37 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 			outputBuffer = outputBuffer.slice(outputBuffer.length - MAX_BUFFER_CHARS);
 		}
 		sendWsMessage(activeClient, { type: "output", data });
+	};
+
+	const updateSessionJournalSnapshot = (running: WebRunningSession): void => {
+		running.session.journal = {
+			bytes: running.journalBytes,
+			truncated: running.journalTruncated,
+			generation: running.journalGeneration,
+		};
+	};
+
+	const queueJournalWrite = (running: WebRunningSession, data: string): void => {
+		if (data.length === 0) return;
+		const bytes = Buffer.byteLength(data, "utf8");
+		running.journalBytes += bytes;
+		updateSessionJournalSnapshot(running);
+		running.journalWriteQueue = running.journalWriteQueue
+			.then(async () => {
+				await appendFile(running.journalPath, data, "utf8");
+			})
+			.catch(() => {
+				// Keep terminal streaming even if journal append fails.
+			});
+	};
+
+	const sendOwnership = (
+		client: ws.WebSocket | null,
+		mode: "controller" | "detached",
+		clientId: string,
+		reason?: string,
+	): void => {
+		sendWsMessage(client, { type: "ownership", mode, clientId, reason });
 	};
 
 	const enqueueLifecycle = async <T>(operation: () => Promise<T>): Promise<T> => {
@@ -919,6 +835,8 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 		outputBuffer = running.outputBuffer;
 		running.session.outputChars = running.outputBuffer.length;
 		running.session.outputTruncated = running.outputTruncated;
+		running.session.attachOwnerClientId = activeClientId;
+		updateSessionJournalSnapshot(running);
 
 		try {
 			running.pty.resize(latestClientCols, latestClientRows);
@@ -1046,6 +964,9 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 		}
 
 		const sessionId = randomBytes(12).toString("hex");
+		const journalGeneration = Date.now();
+		const journalPath = join(journalStoreDir, `${sessionId}.log`);
+		await writeFile(journalPath, "", "utf8");
 		const sessionInfo: WebActiveSession = {
 			id: sessionId,
 			projectId: normalizedLaunch.projectId,
@@ -1057,6 +978,12 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 			startedAt: nowIso8601(),
 			outputChars: 0,
 			outputTruncated: false,
+			attachOwnerClientId: activeClientId,
+			journal: {
+				bytes: 0,
+				truncated: false,
+				generation: journalGeneration,
+			},
 		};
 
 		const running: WebRunningSession = {
@@ -1065,6 +992,11 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 			pty: spawned,
 			outputBuffer: "",
 			outputTruncated: false,
+			journalPath,
+			journalGeneration,
+			journalBytes: 0,
+			journalTruncated: false,
+			journalWriteQueue: Promise.resolve(),
 		};
 		runningSessions.set(sessionInfo.id, running);
 		activateRunningSession(running, { resetBuffer: params?.resetBuffer === true });
@@ -1073,6 +1005,7 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 		spawned.onData((data) => {
 			const current = runningSessions.get(sessionInfo.id);
 			if (!current || current.pty !== spawned) return;
+			queueJournalWrite(current, data);
 			current.outputBuffer += data;
 			if (current.outputBuffer.length > MAX_BUFFER_CHARS) {
 				current.outputBuffer = current.outputBuffer.slice(current.outputBuffer.length - MAX_BUFFER_CHARS);
@@ -1080,11 +1013,14 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 			}
 			current.session.outputChars = current.outputBuffer.length;
 			current.session.outputTruncated = current.outputTruncated;
+			updateSessionJournalSnapshot(current);
 			if (activeSession?.id === sessionInfo.id) {
 				appendOutput(data);
 				current.outputBuffer = outputBuffer;
 				current.session.outputChars = outputBuffer.length;
 				current.session.outputTruncated = current.outputTruncated;
+				current.session.attachOwnerClientId = activeClientId;
+				updateSessionJournalSnapshot(current);
 			}
 		});
 
@@ -1115,6 +1051,12 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 					...activeSession,
 					outputChars: running?.outputBuffer.length ?? outputBuffer.length,
 					outputTruncated: running?.outputTruncated ?? false,
+					attachOwnerClientId: activeClientId,
+					journal: {
+						bytes: running?.journalBytes ?? activeSession.journal.bytes,
+						truncated: running?.journalTruncated ?? activeSession.journal.truncated,
+						generation: running?.journalGeneration ?? activeSession.journal.generation,
+					},
 				}
 			: null;
 		return {
@@ -1123,6 +1065,10 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 			connected: Boolean(activeClient && activeClient.readyState === ws.WebSocket.OPEN),
 			launchDefaults,
 			activeSession: snapshotSession,
+			capabilities: {
+				takeoverAttach: true,
+				mirrorAttach: false,
+			},
 		};
 	};
 
@@ -1220,39 +1166,65 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 
 	const buildSessionRehydrateResponse = async (
 		rawSessionPath: string,
+		rawSessionId: string | null,
 		rawCursor: string | null,
 		rawLimit: string | null,
 	): Promise<WebSessionRehydrateResponse> => {
-		const sessionPath = normalizeSessionPath(rawSessionPath);
-		if (!sessionPath) {
-			throw new Error("Missing session path.");
+		const normalizedSessionId = normalizeOptionalText(rawSessionId ?? undefined);
+		const normalizedSessionPath = normalizeSessionPath(rawSessionPath);
+		const running =
+			(normalizedSessionId ? runningSessions.get(normalizedSessionId) : undefined) ??
+			(normalizedSessionPath ? findRunningSessionBySessionPath(normalizedSessionPath) : undefined) ??
+			(activeSession ? runningSessions.get(activeSession.id) : undefined);
+
+		if (!running) {
+			throw new Error("No active running session available for terminal replay.");
 		}
 
-		const fileStats = await stat(sessionPath);
+		await running.journalWriteQueue;
+		const fileStats = await stat(running.journalPath);
 		if (!fileStats.isFile()) {
-			throw new Error(`Not a session file: ${sessionPath}`);
+			throw new Error(`Missing journal file: ${running.journalPath}`);
 		}
 
-		const manager = SessionManager.open(sessionPath, sessionDirOverride);
-		const leafId = manager.getLeafId();
-		const entries = manager.getBranch(leafId ?? undefined);
-		const totalEntries = entries.length;
-		const cursor = clampInteger(parseIntegerParam(rawCursor), 0, 0, totalEntries);
+		const totalBytes = fileStats.size;
+		const cursor = clampInteger(parseIntegerParam(rawCursor), 0, 0, totalBytes);
 		const limit = clampInteger(parseIntegerParam(rawLimit), DEFAULT_REHYDRATE_LIMIT, 1, MAX_REHYDRATE_LIMIT);
-		const nextCursor = cursor + limit < totalEntries ? cursor + limit : null;
-		const chunk = entries.slice(cursor, cursor + limit);
-		const header = manager.getHeader();
-		const revisionSeed = `${fileStats.size}:${Math.floor(fileStats.mtimeMs)}:${totalEntries}:${leafId ?? "root"}`;
+		const maxReadable = Math.max(0, totalBytes - cursor);
+		const requestedBytes = Math.min(limit, maxReadable);
+		let text = "";
+		let bytesRead = 0;
+		if (requestedBytes > 0) {
+			const handle = await open(running.journalPath, "r");
+			try {
+				const readBuffer = Buffer.allocUnsafe(requestedBytes);
+				const readResult = await handle.read(readBuffer, 0, requestedBytes, cursor);
+				bytesRead = readResult.bytesRead;
+				if (bytesRead > 0) {
+					text = readBuffer.subarray(0, bytesRead).toString("utf8");
+				}
+			} finally {
+				await handle.close();
+			}
+		}
+
+		const nextCursor = cursor + bytesRead < totalBytes ? cursor + bytesRead : null;
+		// Revision must remain stable while bytes append, otherwise reconnect replay restarts
+		// continuously during active streaming.
+		const revisionSeed = `journal:${running.journalGeneration}`;
 
 		return {
-			sessionPath,
-			sessionId: manager.getSessionId() || header?.id || "",
-			leafId,
+			sessionPath: running.session.sessionPath ?? normalizedSessionPath ?? "",
+			sessionId: running.session.id,
+			leafId: null,
 			revision: revisionSeed,
-			totalEntries,
+			totalEntries: totalBytes,
+			totalBytes,
 			cursor,
 			nextCursor,
-			text: buildRehydrateText(chunk),
+			text,
+			source: "journal",
+			generation: running.journalGeneration,
 		};
 	};
 
@@ -1465,15 +1437,18 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 
 			if (req.method === "GET" && pathname === "/api/web/session/rehydrate") {
 				try {
-					const fallbackSessionPath = activeSession?.sessionPath;
+					const fallbackSessionPath = activeSession?.sessionPath ?? "";
 					const sessionPath =
 						normalizeOptionalText(url.searchParams.get("sessionPath") ?? undefined) ?? fallbackSessionPath;
-					if (!sessionPath) {
-						safeJson(res, 400, { error: "Missing sessionPath and no active persisted session." });
+					const sessionId =
+						normalizeOptionalText(url.searchParams.get("sessionId") ?? undefined) ?? activeSession?.id ?? null;
+					if (!sessionId && sessionPath.length === 0) {
+						safeJson(res, 400, { error: "Missing sessionId/sessionPath and no active session." });
 						return;
 					}
 					const response = await buildSessionRehydrateResponse(
 						sessionPath,
+						sessionId,
 						url.searchParams.get("cursor"),
 						url.searchParams.get("limit"),
 					);
@@ -1541,6 +1516,44 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 				} catch (error) {
 					safeJson(res, 500, { error: error instanceof Error ? error.message : "Failed to start session." });
 				}
+				return;
+			}
+
+			if (req.method === "POST" && pathname === "/api/web/session/attach") {
+				let body: unknown = {};
+				try {
+					body = await parseJsonBody(req);
+				} catch (error) {
+					safeJson(res, 400, {
+						error: `Invalid JSON body: ${error instanceof Error ? error.message : "unknown"}`,
+					});
+					return;
+				}
+				if (!isRecord(body)) {
+					safeJson(res, 400, { error: "Invalid request body." });
+					return;
+				}
+
+				const requestedSessionId = normalizeOptionalText(body.sessionId);
+				const requestedSessionPath = normalizeSessionPath(normalizeOptionalText(body.sessionPath));
+				const requested =
+					(requestedSessionId ? runningSessions.get(requestedSessionId) : undefined) ??
+					(requestedSessionPath ? findRunningSessionBySessionPath(requestedSessionPath) : undefined);
+				if (!requested) {
+					safeJson(res, 404, { error: "Requested running session not found." });
+					return;
+				}
+
+				activateRunningSession(requested, {
+					resetBuffer: true,
+					reason: "Attached to running session",
+				});
+				await upsertRecentSessionRunning(requested.session);
+				safeJson(res, 200, {
+					ok: true,
+					attachedSessionId: requested.session.id,
+					tookOver: true,
+				});
 				return;
 			}
 
@@ -1623,23 +1636,37 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 			return;
 		}
 
-		if (activeClient && activeClient.readyState === ws.WebSocket.OPEN) {
-			socket.write("HTTP/1.1 409 Conflict\r\n\r\n");
-			socket.destroy();
-			return;
-		}
-
 		wss.handleUpgrade(req, socket, head, (client) => {
 			wss.emit("connection", client, req);
 		});
 	});
 
 	wss.on("connection", (client, req) => {
+		const clientId = randomBytes(8).toString("hex");
+		if (activeClient && activeClient.readyState === ws.WebSocket.OPEN && activeClient !== client) {
+			const previousClientId = activeClientId ?? "unknown";
+			sendOwnership(activeClient, "detached", previousClientId, "Taken over by another connection.");
+			sendWsMessage(activeClient, {
+				type: "error",
+				message: "Disconnected: terminal control taken over by another client.",
+			});
+			try {
+				activeClient.close(1000, "Session taken over");
+			} catch {
+				// Best effort.
+			}
+		}
 		activeClient = client;
+		activeClientId = clientId;
+
 		const connectionUrl = new URL(req.url ?? "/ws", `http://${host}:${port}`);
 		const replayMode = connectionUrl.searchParams.get("replay");
 		const replayOnConnect = replayMode !== "none";
 		sendWsMessage(client, { type: "status", state: sessionState, reason: sessionReason });
+		sendOwnership(client, "controller", clientId);
+		if (activeSession) {
+			activeSession.attachOwnerClientId = clientId;
+		}
 		if (activeSession && replayOnConnect) {
 			sendWsMessage(client, { type: "reset" });
 			if (outputBuffer.length > 0) {
@@ -1648,6 +1675,10 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 		}
 
 		client.on("message", (payload) => {
+			if (activeClient !== client) {
+				sendOwnership(client, "detached", clientId, "Another client currently controls this session.");
+				return;
+			}
 			const rawText = typeof payload === "string" ? payload : payload.toString("utf8");
 			const message = parseClientMessage(rawText);
 			if (!message) {
@@ -1679,6 +1710,10 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 		client.on("close", () => {
 			if (activeClient === client) {
 				activeClient = null;
+				activeClientId = null;
+				if (activeSession) {
+					activeSession.attachOwnerClientId = null;
+				}
 			}
 		});
 
