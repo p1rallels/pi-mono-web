@@ -81,6 +81,8 @@ const MOMENTUM_DECAY_SPEED_THRESHOLD = 1.5;
 const VELOCITY_SAMPLE_WINDOW_MS = 80;
 const SCROLLBAR_GUTTER_PX = 26;
 const FRAME_DURATION_MS = 16.67;
+const SESSION_REHYDRATE_LIMIT = 220;
+const SESSION_REHYDRATE_MAX_PAGES = 400;
 
 const terminal = new Terminal({
 	cursorBlink: true,
@@ -126,6 +128,8 @@ let panelSavedSessionsInFlight = null;
 let panelSyncInFlight = null;
 let panelMessageTimeout = null;
 let panelTransientMessage = null;
+let serverReplayGate = null;
+let serverReplayGateCounter = 0;
 
 function isTouchDevice() {
 	return navigator.maxTouchPoints > 0 || coarsePointerQuery.matches;
@@ -311,7 +315,7 @@ function renderPanelProjects() {
 
 		const startButton = document.createElement("button");
 		startButton.type = "button";
-		startButton.textContent = "Start";
+		startButton.textContent = "New";
 		startButton.addEventListener("click", () => {
 			panelSelectedProjectId = project.id;
 			void startSessionFromPanel();
@@ -562,6 +566,7 @@ async function syncSavedSessions(force = false) {
 }
 
 async function startSessionFromPanel(overrides = {}) {
+	const gateId = openServerReplayGate();
 	const payload = {
 		...launchPayloadFromInputs(),
 		...overrides,
@@ -581,7 +586,9 @@ async function startSessionFromPanel(overrides = {}) {
 		setPanelNotice("Session started");
 		await syncPanelState(true);
 		await syncSavedSessions(true);
+		await finalizeServerReplayGate(gateId);
 	} catch (error) {
+		flushServerReplayGate(gateId);
 		setPanelNotice(panelErrorMessage(error, "Failed to start session"));
 	}
 }
@@ -602,6 +609,7 @@ async function stopSessionFromPanel() {
 }
 
 async function restartSessionFromPanel() {
+	const gateId = openServerReplayGate();
 	try {
 		await fetchJson("/api/web/session/restart", {
 			method: "POST",
@@ -611,7 +619,9 @@ async function restartSessionFromPanel() {
 		setPanelNotice("Session restarted");
 		await syncPanelState(true);
 		await syncSavedSessions(true);
+		await finalizeServerReplayGate(gateId);
 	} catch (error) {
+		flushServerReplayGate(gateId);
 		setPanelNotice(panelErrorMessage(error, "Failed to restart session"));
 	}
 }
@@ -667,7 +677,9 @@ async function deleteProject(projectId) {
 }
 
 async function relaunchRecentSession(session) {
+	const gateId = openServerReplayGate();
 	const payload = {
+		sessionId: session.id || undefined,
 		projectId: session.projectId || undefined,
 		cwd: session.projectId ? undefined : session.cwd,
 		provider: session.provider || undefined,
@@ -687,7 +699,9 @@ async function relaunchRecentSession(session) {
 		setPanelNotice("Session relaunched");
 		await syncPanelState(true);
 		await syncSavedSessions(true);
+		await finalizeServerReplayGate(gateId);
 	} catch (error) {
+		flushServerReplayGate(gateId);
 		setPanelNotice(panelErrorMessage(error, "Failed to relaunch session"));
 	}
 }
@@ -875,14 +889,31 @@ function pinViewportFor(durationMs = 150) {
 	step();
 }
 
-function handleServerMessage(rawData) {
+function resetTerminalViewport() {
+	stopMomentumScroll();
+	terminal.reset();
+	if (typeof terminal.clear === "function") {
+		terminal.clear();
+	}
+	scheduleFit(10);
+}
+
+function parseServerMessage(rawData) {
 	let message;
 	try {
 		message = JSON.parse(rawData);
 	} catch {
-		return;
+		return null;
 	}
 
+	if (!message || typeof message.type !== "string") {
+		return null;
+	}
+
+	return message;
+}
+
+function applyServerMessage(message) {
 	if (!message || typeof message.type !== "string") {
 		return;
 	}
@@ -893,12 +924,7 @@ function handleServerMessage(rawData) {
 	}
 
 	if (message.type === "reset") {
-		stopMomentumScroll();
-		terminal.reset();
-		if (typeof terminal.clear === "function") {
-			terminal.clear();
-		}
-		scheduleFit(10);
+		resetTerminalViewport();
 		return;
 	}
 
@@ -919,6 +945,104 @@ function handleServerMessage(rawData) {
 	}
 }
 
+function openServerReplayGate() {
+	if (serverReplayGate) return serverReplayGate.id;
+	serverReplayGateCounter += 1;
+	serverReplayGate = { id: serverReplayGateCounter, queue: [] };
+	return serverReplayGate.id;
+}
+
+function flushServerReplayGate(gateId) {
+	if (!serverReplayGate || serverReplayGate.id !== gateId) return;
+	const queuedMessages = serverReplayGate.queue.slice();
+	serverReplayGate = null;
+	for (const queuedMessage of queuedMessages) {
+		applyServerMessage(queuedMessage);
+	}
+}
+
+async function streamRehydrateForSession(sessionPath, gateId) {
+	let cursor = 0;
+	let revision = null;
+	let pageCount = 0;
+	resetTerminalViewport();
+
+	while (pageCount < SESSION_REHYDRATE_MAX_PAGES) {
+		if (!serverReplayGate || serverReplayGate.id !== gateId) {
+			return;
+		}
+
+		const response = await fetchJson(
+			`/api/web/session/rehydrate?sessionPath=${encodeURIComponent(sessionPath)}&cursor=${cursor}&limit=${SESSION_REHYDRATE_LIMIT}`,
+		);
+		if (!response || typeof response !== "object") {
+			return;
+		}
+
+		if (typeof response.revision === "string") {
+			if (revision === null) {
+				revision = response.revision;
+			} else if (revision !== response.revision) {
+				revision = response.revision;
+				cursor = 0;
+				pageCount = 0;
+				resetTerminalViewport();
+				continue;
+			}
+		}
+
+		if (typeof response.text === "string" && response.text.length > 0) {
+			terminal.write(response.text);
+		}
+
+		const nextCursor =
+			typeof response.nextCursor === "number" && Number.isInteger(response.nextCursor) && response.nextCursor >= 0
+				? response.nextCursor
+				: null;
+		if (nextCursor === null || nextCursor <= cursor) {
+			return;
+		}
+
+		cursor = nextCursor;
+		pageCount += 1;
+	}
+
+	terminal.writeln("\r\n[web] Session rehydrate hit page limit.\r\n");
+}
+
+async function finalizeServerReplayGate(gateId) {
+	const gate = serverReplayGate;
+	if (!gate || gate.id !== gateId) return;
+
+	const activeSession = panelHostState && panelHostState.activeSession ? panelHostState.activeSession : null;
+	const shouldRehydrate =
+		Boolean(activeSession && typeof activeSession.sessionPath === "string" && activeSession.sessionPath.length > 0) &&
+		activeSession.outputTruncated === true;
+
+	if (shouldRehydrate) {
+		const fallbackQueue = gate.queue.slice();
+		gate.queue = [];
+		try {
+			await streamRehydrateForSession(activeSession.sessionPath, gateId);
+		} catch (error) {
+			gate.queue = fallbackQueue.concat(gate.queue);
+			terminal.writeln(`\r\n[web] ${panelErrorMessage(error, "Failed to reconstruct session history")}\r\n`);
+		}
+	}
+
+	flushServerReplayGate(gateId);
+}
+
+function handleServerMessage(rawData) {
+	const message = parseServerMessage(rawData);
+	if (!message) return;
+	if (serverReplayGate) {
+		serverReplayGate.queue.push(message);
+		return;
+	}
+	applyServerMessage(message);
+}
+
 function connect() {
 	clearReconnectTimer();
 	setStatus("connecting");
@@ -930,8 +1054,11 @@ function connect() {
 	nextSocket.addEventListener("open", () => {
 		reconnectingManually = false;
 		setStatus("connected");
+		const gateId = openServerReplayGate();
 		sendResize();
-		void syncPanelState(true);
+		void syncPanelState(true).then(async () => {
+			await finalizeServerReplayGate(gateId);
+		});
 	});
 
 	nextSocket.addEventListener("message", (event) => {
@@ -940,6 +1067,7 @@ function connect() {
 	});
 
 	nextSocket.addEventListener("close", () => {
+		serverReplayGate = null;
 		if (reconnectingManually) {
 			reconnectingManually = false;
 			return;

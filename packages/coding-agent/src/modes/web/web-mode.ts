@@ -18,7 +18,7 @@ import chalk from "chalk";
 import * as nodePty from "node-pty";
 import * as ws from "ws";
 import { getAgentDir } from "../../config.js";
-import { SessionManager } from "../../core/session-manager.js";
+import { type SessionEntry, SessionManager, type SessionMessageEntry } from "../../core/session-manager.js";
 
 type WebSessionState = "starting" | "running" | "stopped";
 
@@ -127,6 +127,8 @@ interface WebActiveSession {
 	sessionPath?: string;
 	noSession: boolean;
 	startedAt: string;
+	outputChars: number;
+	outputTruncated: boolean;
 }
 
 interface WebHostStateResponse {
@@ -148,6 +150,7 @@ interface WebSessionStartRequest {
 	provider?: string;
 	model?: string;
 	sessionPath?: string;
+	sessionId?: string;
 	noSession?: boolean;
 }
 
@@ -168,6 +171,18 @@ interface WebRunningSession {
 	launch: WebLaunchConfig;
 	pty: nodePty.IPty;
 	outputBuffer: string;
+	outputTruncated: boolean;
+}
+
+interface WebSessionRehydrateResponse {
+	sessionPath: string;
+	sessionId: string;
+	leafId: string | null;
+	revision: string;
+	totalEntries: number;
+	cursor: number;
+	nextCursor: number | null;
+	text: string;
 }
 
 const DEFAULT_HOST = "127.0.0.1";
@@ -177,6 +192,8 @@ const MAX_BUFFER_CHARS = 250_000;
 const MAX_REQUEST_BYTES = 1_000_000;
 const MAX_RECENT_SESSIONS = 80;
 const STORE_VERSION = 1;
+const DEFAULT_REHYDRATE_LIMIT = 220;
+const MAX_REHYDRATE_LIMIT = 2000;
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -571,6 +588,176 @@ async function ensureNodePtyHelperExecutable(): Promise<void> {
 	}
 }
 
+function extractSessionDirArg(args: string[]): string | undefined {
+	for (let i = 0; i < args.length; i += 1) {
+		if (args[i] === "--session-dir" && i + 1 < args.length) {
+			return args[i + 1];
+		}
+	}
+	return undefined;
+}
+
+function clampInteger(value: unknown, fallback: number, min: number, max: number): number {
+	if (typeof value !== "number" || !Number.isFinite(value)) return fallback;
+	return Math.max(min, Math.min(max, Math.floor(value)));
+}
+
+function parseIntegerParam(value: string | null): number | undefined {
+	if (value === null) return undefined;
+	const parsed = Number.parseInt(value, 10);
+	return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function normalizeSessionPath(value: string | undefined): string | undefined {
+	const normalized = normalizeOptionalText(value);
+	if (!normalized) return undefined;
+	return resolve(expandHomePath(normalized));
+}
+
+function normalizeMessageText(value: unknown): string {
+	if (typeof value === "string") {
+		return value.trim();
+	}
+	if (!Array.isArray(value)) {
+		return "";
+	}
+	const chunks: string[] = [];
+	for (const block of value) {
+		if (!isRecord(block) || typeof block.type !== "string") continue;
+		if (block.type === "text" && typeof block.text === "string") {
+			chunks.push(block.text.trim());
+		}
+		if (block.type === "thinking" && typeof block.thinking === "string") {
+			chunks.push(`[thinking] ${block.thinking.trim()}`);
+		}
+	}
+	return chunks.filter((entry) => entry.length > 0).join("\n");
+}
+
+function rolePrefix(role: string): string {
+	if (role === "assistant") return "assistant";
+	if (role === "toolResult") return "tool";
+	if (role === "bashExecution") return "bash";
+	if (role === "custom") return "custom";
+	if (role === "branchSummary") return "branch";
+	if (role === "compactionSummary") return "compaction";
+	return "user";
+}
+
+function renderMessageEntryText(entry: SessionMessageEntry, toolCallNames: Map<string, string>): string {
+	const message = entry.message;
+	const role = rolePrefix(message.role);
+	const lines: string[] = [];
+	const text = normalizeMessageText(isRecord(message) ? (message as { content?: unknown }).content : undefined);
+	if (text.length > 0) {
+		lines.push(`${role}: ${text}`);
+	}
+
+	if (message.role === "assistant" && Array.isArray(message.content)) {
+		for (const block of message.content) {
+			if (!isRecord(block) || typeof block.type !== "string") continue;
+			if (block.type === "toolCall" && typeof block.id === "string" && typeof block.name === "string") {
+				toolCallNames.set(block.id, block.name);
+				const serializedArgs =
+					block.arguments === undefined
+						? ""
+						: (() => {
+								try {
+									return ` ${JSON.stringify(block.arguments)}`;
+								} catch {
+									return "";
+								}
+							})();
+				lines.push(`tool call: ${block.name}${serializedArgs}`);
+			}
+		}
+
+		if (message.stopReason === "aborted") {
+			lines.push("assistant: [aborted]");
+		}
+		if (message.stopReason === "error" && typeof message.errorMessage === "string") {
+			lines.push(`assistant error: ${message.errorMessage}`);
+		}
+	}
+
+	if (message.role === "toolResult") {
+		const toolNameFromCall =
+			typeof message.toolCallId === "string" ? toolCallNames.get(message.toolCallId) : undefined;
+		const toolName =
+			(typeof message.toolName === "string" && message.toolName.trim().length > 0
+				? message.toolName
+				: toolNameFromCall) ?? "tool";
+		if (lines.length === 0) {
+			lines.push(`[${toolName}]`);
+		}
+		if (message.isError) {
+			lines.push(`[${toolName}] result marked as error`);
+		}
+	}
+
+	if (message.role === "bashExecution") {
+		const command = typeof message.command === "string" ? message.command.trim() : "";
+		const output = typeof message.output === "string" ? message.output : "";
+		if (command.length > 0) {
+			lines.push(`$ ${command}`);
+		}
+		if (output.trim().length > 0) {
+			lines.push(output.trimEnd());
+		}
+		if (typeof message.exitCode === "number") {
+			lines.push(`(exit ${message.exitCode})`);
+		}
+		if (message.cancelled) {
+			lines.push("(cancelled)");
+		}
+		if (message.truncated) {
+			lines.push("(truncated)");
+		}
+	}
+
+	if (message.role === "custom" && lines.length === 0) {
+		lines.push("custom message");
+	}
+
+	if (lines.length === 0) {
+		lines.push(`${role}: [no text]`);
+	}
+	return `${lines.join("\r\n")}\r\n\r\n`;
+}
+
+function renderSessionEntryText(entry: SessionEntry, toolCallNames: Map<string, string>): string {
+	if (entry.type === "message") {
+		return renderMessageEntryText(entry, toolCallNames);
+	}
+	if (entry.type === "compaction") {
+		return `[compaction]\r\n${entry.summary.trim()}\r\n\r\n`;
+	}
+	if (entry.type === "branch_summary") {
+		return `[branch summary]\r\n${entry.summary.trim()}\r\n\r\n`;
+	}
+	if (entry.type === "custom_message") {
+		const text = normalizeMessageText(entry.content);
+		if (text.length === 0) return "";
+		return `custom: ${text}\r\n\r\n`;
+	}
+	if (entry.type === "model_change") {
+		return `[model] ${entry.provider}/${entry.modelId}\r\n\r\n`;
+	}
+	if (entry.type === "thinking_level_change") {
+		return `[thinking] ${entry.thinkingLevel}\r\n\r\n`;
+	}
+	return "";
+}
+
+function buildRehydrateText(entries: SessionEntry[]): string {
+	const toolCallNames = new Map<string, string>();
+	let output = "";
+	for (const entry of entries) {
+		output += renderSessionEntryText(entry, toolCallNames);
+	}
+	return output;
+}
+
 export async function runWebMode(options: WebModeOptions): Promise<void> {
 	const host = options.host ?? DEFAULT_HOST;
 	const port = options.port ?? DEFAULT_PORT;
@@ -578,6 +765,8 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 	const reconnectMs = options.reconnectMs ?? DEFAULT_RECONNECT_MS;
 	const openBrowser = options.openBrowser ?? false;
 	const baseChildArgs = sanitizeArgsForChild(options.rawArgs);
+	const sessionDirArg = extractSessionDirArg(baseChildArgs);
+	const sessionDirOverride = normalizeSessionPath(sessionDirArg);
 
 	const indexTemplate = await readFile(join(publicDir, "index.html"), "utf8");
 	const appJsPath = join(publicDir, "app.js");
@@ -599,7 +788,6 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 	let sessionReason: string | undefined;
 	let outputBuffer = "";
 	let activeClient: ws.WebSocket | null = null;
-	let reconnectTimer: NodeJS.Timeout | undefined;
 	let ptyProcess: nodePty.IPty | null = null;
 	const runningSessions = new Map<string, WebRunningSession>();
 	let latestClientCols = 120;
@@ -643,12 +831,6 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 			outputBuffer = outputBuffer.slice(outputBuffer.length - MAX_BUFFER_CHARS);
 		}
 		sendWsMessage(activeClient, { type: "output", data });
-	};
-
-	const clearReconnectTimer = (): void => {
-		if (!reconnectTimer) return;
-		clearTimeout(reconnectTimer);
-		reconnectTimer = undefined;
 	};
 
 	const enqueueLifecycle = async <T>(operation: () => Promise<T>): Promise<T> => {
@@ -711,6 +893,16 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 		return undefined;
 	};
 
+	const findRunningSessionBySessionPath = (sessionPath: string): WebRunningSession | undefined => {
+		for (const running of runningSessions.values()) {
+			if (!running.session.sessionPath) continue;
+			if (running.session.sessionPath === sessionPath) {
+				return running;
+			}
+		}
+		return undefined;
+	};
+
 	const activateRunningSession = (
 		running: WebRunningSession,
 		params?: { resetBuffer?: boolean; reason?: string },
@@ -725,6 +917,8 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 		};
 		ptyProcess = running.pty;
 		outputBuffer = running.outputBuffer;
+		running.session.outputChars = running.outputBuffer.length;
+		running.session.outputTruncated = running.outputTruncated;
 
 		try {
 			running.pty.resize(latestClientCols, latestClientRows);
@@ -801,21 +995,26 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 
 	const startPtySession = async (
 		launch: WebLaunchConfig,
-		params?: { resetBuffer?: boolean; forceNew?: boolean },
+		params?: { resetBuffer?: boolean; forceNew?: boolean; replaceActive?: boolean; sessionId?: string },
 	): Promise<WebActiveSession> => {
 		const normalizedLaunch: WebLaunchConfig = {
 			...launch,
+			sessionPath: normalizeSessionPath(launch.sessionPath),
 			noSession: launch.sessionPath ? false : launch.noSession,
 		};
 
 		if (params?.forceNew !== true) {
-			const runningMatch = findRunningSessionByLaunch(normalizedLaunch);
+			const runningMatch =
+				(params?.sessionId ? runningSessions.get(params.sessionId) : undefined) ??
+				(normalizedLaunch.sessionPath
+					? findRunningSessionBySessionPath(normalizedLaunch.sessionPath)
+					: findRunningSessionByLaunch(normalizedLaunch));
 			if (runningMatch) {
 				activateRunningSession(runningMatch, { resetBuffer: params?.resetBuffer === true });
 				await upsertRecentSessionRunning(runningMatch.session);
 				return runningMatch.session;
 			}
-		} else if (activeSession) {
+		} else if (params.replaceActive === true && activeSession) {
 			await stopActiveSession("Restarting session", "stopped");
 		}
 
@@ -856,6 +1055,8 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 			sessionPath: normalizedLaunch.sessionPath,
 			noSession: normalizedLaunch.noSession,
 			startedAt: nowIso8601(),
+			outputChars: 0,
+			outputTruncated: false,
 		};
 
 		const running: WebRunningSession = {
@@ -863,6 +1064,7 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 			launch: normalizedLaunch,
 			pty: spawned,
 			outputBuffer: "",
+			outputTruncated: false,
 		};
 		runningSessions.set(sessionInfo.id, running);
 		activateRunningSession(running, { resetBuffer: params?.resetBuffer === true });
@@ -874,10 +1076,15 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 			current.outputBuffer += data;
 			if (current.outputBuffer.length > MAX_BUFFER_CHARS) {
 				current.outputBuffer = current.outputBuffer.slice(current.outputBuffer.length - MAX_BUFFER_CHARS);
+				current.outputTruncated = true;
 			}
+			current.session.outputChars = current.outputBuffer.length;
+			current.session.outputTruncated = current.outputTruncated;
 			if (activeSession?.id === sessionInfo.id) {
 				appendOutput(data);
 				current.outputBuffer = outputBuffer;
+				current.session.outputChars = outputBuffer.length;
+				current.session.outputTruncated = current.outputTruncated;
 			}
 		});
 
@@ -902,12 +1109,20 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 	};
 
 	const snapshotState = (): WebHostStateResponse => {
+		const running = activeSession ? runningSessions.get(activeSession.id) : undefined;
+		const snapshotSession = activeSession
+			? {
+					...activeSession,
+					outputChars: running?.outputBuffer.length ?? outputBuffer.length,
+					outputTruncated: running?.outputTruncated ?? false,
+				}
+			: null;
 		return {
 			state: sessionState,
 			reason: sessionReason,
 			connected: Boolean(activeClient && activeClient.readyState === ws.WebSocket.OPEN),
 			launchDefaults,
-			activeSession,
+			activeSession: snapshotSession,
 		};
 	};
 
@@ -939,7 +1154,7 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 			}
 		}
 
-		const sessions = await SessionManager.list(cwd);
+		const sessions = await SessionManager.list(cwd, sessionDirOverride);
 		return sessions.slice(0, MAX_RECENT_SESSIONS).map((session) => ({
 			path: session.path,
 			id: session.id,
@@ -956,10 +1171,13 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 	const resolveLaunchFromRequest = async (
 		payload: WebSessionStartRequest,
 		fallbackLaunch: WebLaunchConfig,
+		options?: { allowFallbackSessionPath?: boolean },
 	): Promise<WebLaunchConfig> => {
 		const provider = normalizeOptionalText(payload.provider) ?? fallbackLaunch.provider;
 		const model = normalizeOptionalText(payload.model) ?? fallbackLaunch.model;
-		const requestedSessionPath = normalizeOptionalText(payload.sessionPath) ?? fallbackLaunch.sessionPath;
+		const requestedSessionPath = normalizeSessionPath(
+			payload.sessionPath ?? (options?.allowFallbackSessionPath === true ? fallbackLaunch.sessionPath : undefined),
+		);
 		const requestedNoSession = typeof payload.noSession === "boolean" ? payload.noSession : fallbackLaunch.noSession;
 		const noSession = requestedSessionPath ? false : requestedNoSession;
 
@@ -1000,17 +1218,47 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 		};
 	};
 
-	const scheduleReconnectShutdown = (): void => {
-		clearReconnectTimer();
-		reconnectTimer = setTimeout(() => {
-			void shutdown(`No browser connection for ${reconnectMs}ms`);
-		}, reconnectMs);
+	const buildSessionRehydrateResponse = async (
+		rawSessionPath: string,
+		rawCursor: string | null,
+		rawLimit: string | null,
+	): Promise<WebSessionRehydrateResponse> => {
+		const sessionPath = normalizeSessionPath(rawSessionPath);
+		if (!sessionPath) {
+			throw new Error("Missing session path.");
+		}
+
+		const fileStats = await stat(sessionPath);
+		if (!fileStats.isFile()) {
+			throw new Error(`Not a session file: ${sessionPath}`);
+		}
+
+		const manager = SessionManager.open(sessionPath, sessionDirOverride);
+		const leafId = manager.getLeafId();
+		const entries = manager.getBranch(leafId ?? undefined);
+		const totalEntries = entries.length;
+		const cursor = clampInteger(parseIntegerParam(rawCursor), 0, 0, totalEntries);
+		const limit = clampInteger(parseIntegerParam(rawLimit), DEFAULT_REHYDRATE_LIMIT, 1, MAX_REHYDRATE_LIMIT);
+		const nextCursor = cursor + limit < totalEntries ? cursor + limit : null;
+		const chunk = entries.slice(cursor, cursor + limit);
+		const header = manager.getHeader();
+		const revisionSeed = `${fileStats.size}:${Math.floor(fileStats.mtimeMs)}:${totalEntries}:${leafId ?? "root"}`;
+
+		return {
+			sessionPath,
+			sessionId: manager.getSessionId() || header?.id || "",
+			leafId,
+			revision: revisionSeed,
+			totalEntries,
+			cursor,
+			nextCursor,
+			text: buildRehydrateText(chunk),
+		};
 	};
 
 	const shutdown = async (reason: string): Promise<void> => {
 		if (shuttingDown) return;
 		shuttingDown = true;
-		clearReconnectTimer();
 
 		await enqueueLifecycle(async () => {
 			await stopAllSessions(reason, "stopped");
@@ -1215,6 +1463,29 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 				return;
 			}
 
+			if (req.method === "GET" && pathname === "/api/web/session/rehydrate") {
+				try {
+					const fallbackSessionPath = activeSession?.sessionPath;
+					const sessionPath =
+						normalizeOptionalText(url.searchParams.get("sessionPath") ?? undefined) ?? fallbackSessionPath;
+					if (!sessionPath) {
+						safeJson(res, 400, { error: "Missing sessionPath and no active persisted session." });
+						return;
+					}
+					const response = await buildSessionRehydrateResponse(
+						sessionPath,
+						url.searchParams.get("cursor"),
+						url.searchParams.get("limit"),
+					);
+					safeJson(res, 200, response);
+				} catch (error) {
+					safeJson(res, 400, {
+						error: error instanceof Error ? error.message : "Failed to reconstruct session history.",
+					});
+				}
+				return;
+			}
+
 			if (req.method === "POST" && pathname === "/api/web/session/start") {
 				let body: unknown;
 				try {
@@ -1239,7 +1510,9 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 				};
 				let launch: WebLaunchConfig;
 				try {
-					launch = await resolveLaunchFromRequest(body as WebSessionStartRequest, fallback);
+					launch = await resolveLaunchFromRequest(body as WebSessionStartRequest, fallback, {
+						allowFallbackSessionPath: false,
+					});
 				} catch (error) {
 					safeJson(res, 400, {
 						error: error instanceof Error ? error.message : "Failed to resolve session launch.",
@@ -1248,8 +1521,21 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 				}
 
 				try {
+					const request = body as WebSessionStartRequest;
+					const requestedSessionPath = normalizeSessionPath(request.sessionPath);
+					const requestedSessionId = normalizeOptionalText(request.sessionId);
+					const forceNew = !requestedSessionPath && !requestedSessionId;
+					if (forceNew) {
+						const requestedNoSession =
+							typeof request.noSession === "boolean" ? request.noSession : launch.noSession;
+						launch = { ...launch, sessionPath: undefined, noSession: requestedNoSession };
+					}
 					const started = await enqueueLifecycle(async () => {
-						return await startPtySession(launch, { resetBuffer: true });
+						return await startPtySession(launch, {
+							resetBuffer: true,
+							forceNew,
+							sessionId: requestedSessionId,
+						});
 					});
 					safeJson(res, 200, { ok: true, sessionId: started.id });
 				} catch (error) {
@@ -1275,7 +1561,9 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 
 				let launch: WebLaunchConfig;
 				try {
-					launch = await resolveLaunchFromRequest(body as WebSessionStartRequest, activeLaunchForRestart);
+					launch = await resolveLaunchFromRequest(body as WebSessionStartRequest, activeLaunchForRestart, {
+						allowFallbackSessionPath: true,
+					});
 				} catch (error) {
 					safeJson(res, 400, {
 						error: error instanceof Error ? error.message : "Failed to resolve restart launch.",
@@ -1285,7 +1573,7 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 
 				try {
 					const started = await enqueueLifecycle(async () => {
-						return await startPtySession(launch, { resetBuffer: true, forceNew: true });
+						return await startPtySession(launch, { resetBuffer: true, forceNew: true, replaceActive: true });
 					});
 					safeJson(res, 200, { ok: true, sessionId: started.id });
 				} catch (error) {
@@ -1346,11 +1634,13 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 		});
 	});
 
-	wss.on("connection", (client) => {
+	wss.on("connection", (client, req) => {
 		activeClient = client;
-		clearReconnectTimer();
+		const connectionUrl = new URL(req.url ?? "/ws", `http://${host}:${port}`);
+		const replayMode = connectionUrl.searchParams.get("replay");
+		const replayOnConnect = replayMode !== "none";
 		sendWsMessage(client, { type: "status", state: sessionState, reason: sessionReason });
-		if (activeSession) {
+		if (activeSession && replayOnConnect) {
 			sendWsMessage(client, { type: "reset" });
 			if (outputBuffer.length > 0) {
 				sendWsMessage(client, { type: "output", data: outputBuffer });
@@ -1389,9 +1679,6 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 		client.on("close", () => {
 			if (activeClient === client) {
 				activeClient = null;
-				if (!shuttingDown) {
-					scheduleReconnectShutdown();
-				}
 			}
 		});
 

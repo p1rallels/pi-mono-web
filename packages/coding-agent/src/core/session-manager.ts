@@ -740,6 +740,9 @@ export class SessionManager {
 		if (this.persist) {
 			const fileTimestamp = timestamp.replace(/[:.]/g, "-");
 			this.sessionFile = join(this.getSessionDir(), `${fileTimestamp}_${this.sessionId}.jsonl`);
+			// Persist header immediately so active sessions are discoverable via list/resume
+			// even before the first assistant message is completed.
+			this._rewriteFile();
 		}
 		return this.sessionFile;
 	}
@@ -799,9 +802,9 @@ export class SessionManager {
 		}
 
 		if (!this.flushed) {
-			for (const e of this.fileEntries) {
-				appendFileSync(this.sessionFile, `${JSON.stringify(e)}\n`);
-			}
+			// Rewrite full file to avoid duplicate headers when the header was already
+			// persisted during newSession().
+			this._rewriteFile();
 			this.flushed = true;
 		} else {
 			appendFileSync(this.sessionFile, `${JSON.stringify(entry)}\n`);
