@@ -25,11 +25,12 @@ const MOBILE_KEY_SEQUENCES = {
 
 const TOUCH_SCROLL_PIXELS_PER_LINE = 14;
 const TAP_FOCUS_THRESHOLD = 8;
-const MOMENTUM_MIN_START_VELOCITY = 0.01;
-const MOMENTUM_STOP_VELOCITY = 0.003;
-const MOMENTUM_MAX_VELOCITY = 14.0;
-const MOMENTUM_DECAY_PER_FRAME = 0.975;
-const MOMENTUM_BOOST = 11.0;
+const MOMENTUM_MIN_START_VELOCITY = 0.035;
+const MOMENTUM_STOP_VELOCITY = 0.01;
+const MOMENTUM_MAX_VELOCITY = 2.4;
+const MOMENTUM_DECAY_PER_FRAME = 0.94;
+const MOMENTUM_BOOST = 2.5;
+const SCROLLBAR_GUTTER_PX = 26;
 const FRAME_DURATION_MS = 16.67;
 
 const terminal = new Terminal({
@@ -210,6 +211,13 @@ function stopMomentumScroll() {
 	momentumLastTime = 0;
 }
 
+function isScrollbarGestureStart(touch) {
+	const viewportEl = getTerminalViewportElement();
+	if (!viewportEl) return false;
+	const bounds = viewportEl.getBoundingClientRect();
+	return touch.clientX >= bounds.right - SCROLLBAR_GUTTER_PX;
+}
+
 function startMomentumScroll(initialVelocity) {
 	if (!mobileUiEnabled) return;
 
@@ -372,7 +380,7 @@ function handleTouchStart(event) {
 		lastY: touch.clientY,
 		lastTime: performance.now(),
 		velocityY: 0,
-		peakVelocityY: 0,
+		ignoreGesture: isScrollbarGestureStart(touch),
 		totalX: 0,
 		totalY: 0,
 		scrollRemainder: 0,
@@ -382,6 +390,7 @@ function handleTouchStart(event) {
 
 function handleTouchMove(event) {
 	if (!mobileUiEnabled || !touchSession || event.touches.length !== 1) return;
+	if (touchSession.ignoreGesture) return;
 
 	const touch = event.touches[0];
 	const deltaX = touch.clientX - touchSession.lastX;
@@ -394,9 +403,6 @@ function handleTouchMove(event) {
 	touchSession.lastY = touch.clientY;
 	touchSession.lastTime = now;
 	touchSession.velocityY = touchSession.velocityY * 0.75 + instantVelocityY * 0.25;
-	if (Math.abs(instantVelocityY) > Math.abs(touchSession.peakVelocityY)) {
-		touchSession.peakVelocityY = instantVelocityY;
-	}
 	touchSession.totalX += deltaX;
 	touchSession.totalY += deltaY;
 
@@ -418,19 +424,16 @@ function handleTouchMove(event) {
 
 function handleTouchEnd() {
 	if (!mobileUiEnabled || !touchSession) return;
-	const { totalX, totalY, didScroll, velocityY, peakVelocityY } = touchSession;
+	const { totalX, totalY, didScroll, velocityY, ignoreGesture } = touchSession;
 	touchSession = null;
 
-	if (didScroll) {
-		const releaseVelocity =
-			Math.abs(velocityY) >= MOMENTUM_MIN_START_VELOCITY ? velocityY : peakVelocityY || velocityY;
-		startMomentumScroll(releaseVelocity * MOMENTUM_BOOST);
-		return;
-	}
+	if (ignoreGesture) return;
 
-	if (Math.abs(totalY) > TAP_FOCUS_THRESHOLD * 2 && Math.abs(totalY) >= Math.abs(totalX)) {
-		const fallbackVelocity = peakVelocityY || velocityY || (totalY > 0 ? 0.04 : -0.04);
-		startMomentumScroll(fallbackVelocity * MOMENTUM_BOOST);
+	if (didScroll) {
+		const releaseVelocity = Math.abs(velocityY) >= MOMENTUM_MIN_START_VELOCITY ? velocityY : 0;
+		if (releaseVelocity !== 0 && Math.sign(releaseVelocity) === Math.sign(totalY || releaseVelocity)) {
+			startMomentumScroll(releaseVelocity * MOMENTUM_BOOST);
+		}
 		return;
 	}
 
