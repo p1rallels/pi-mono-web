@@ -23,12 +23,13 @@ const MOBILE_KEY_SEQUENCES = {
 	enter: "\r",
 };
 
-const TOUCH_SCROLL_PIXELS_PER_LINE = 18;
+const TOUCH_SCROLL_PIXELS_PER_LINE = 14;
 const TAP_FOCUS_THRESHOLD = 8;
-const MOMENTUM_MIN_START_VELOCITY = 0.08;
-const MOMENTUM_STOP_VELOCITY = 0.01;
-const MOMENTUM_MAX_VELOCITY = 1.6;
-const MOMENTUM_DECAY_PER_FRAME = 0.92;
+const MOMENTUM_MIN_START_VELOCITY = 0.02;
+const MOMENTUM_STOP_VELOCITY = 0.008;
+const MOMENTUM_MAX_VELOCITY = 2.8;
+const MOMENTUM_DECAY_PER_FRAME = 0.95;
+const MOMENTUM_BOOST = 2.2;
 const FRAME_DURATION_MS = 16.67;
 
 const terminal = new Terminal({
@@ -371,6 +372,7 @@ function handleTouchStart(event) {
 		lastY: touch.clientY,
 		lastTime: performance.now(),
 		velocityY: 0,
+		peakVelocityY: 0,
 		totalX: 0,
 		totalY: 0,
 		scrollRemainder: 0,
@@ -392,6 +394,9 @@ function handleTouchMove(event) {
 	touchSession.lastY = touch.clientY;
 	touchSession.lastTime = now;
 	touchSession.velocityY = touchSession.velocityY * 0.75 + instantVelocityY * 0.25;
+	if (Math.abs(instantVelocityY) > Math.abs(touchSession.peakVelocityY)) {
+		touchSession.peakVelocityY = instantVelocityY;
+	}
 	touchSession.totalX += deltaX;
 	touchSession.totalY += deltaY;
 
@@ -413,11 +418,19 @@ function handleTouchMove(event) {
 
 function handleTouchEnd() {
 	if (!mobileUiEnabled || !touchSession) return;
-	const { totalX, totalY, didScroll, velocityY } = touchSession;
+	const { totalX, totalY, didScroll, velocityY, peakVelocityY } = touchSession;
 	touchSession = null;
 
 	if (didScroll) {
-		startMomentumScroll(velocityY);
+		const releaseVelocity =
+			Math.abs(velocityY) >= MOMENTUM_MIN_START_VELOCITY ? velocityY : peakVelocityY || velocityY;
+		startMomentumScroll(releaseVelocity * MOMENTUM_BOOST);
+		return;
+	}
+
+	if (Math.abs(totalY) > TAP_FOCUS_THRESHOLD * 2 && Math.abs(totalY) >= Math.abs(totalX)) {
+		const fallbackVelocity = peakVelocityY || velocityY || (totalY > 0 ? 0.04 : -0.04);
+		startMomentumScroll(fallbackVelocity * MOMENTUM_BOOST);
 		return;
 	}
 
