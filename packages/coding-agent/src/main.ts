@@ -29,7 +29,7 @@ import { SettingsManager } from "./core/settings-manager.js";
 import { printTimings, time } from "./core/timings.js";
 import { allTools } from "./core/tools/index.js";
 import { runMigrations, showDeprecationWarnings } from "./migrations.js";
-import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.js";
+import { InteractiveMode, runPrintMode, runRpcMode, runWebMode } from "./modes/index.js";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
 
 /**
@@ -510,6 +510,29 @@ export async function main(args: string[]) {
 		return;
 	}
 
+	const earlyParsed = parseArgs(args);
+	if (earlyParsed.mode === "web") {
+		if (earlyParsed.version) {
+			console.log(VERSION);
+			process.exit(0);
+		}
+
+		if (earlyParsed.help) {
+			printHelp();
+			process.exit(0);
+		}
+
+		await runWebMode({
+			rawArgs: args,
+			host: earlyParsed.webHost,
+			port: earlyParsed.webPort,
+			token: earlyParsed.webToken,
+			openBrowser: earlyParsed.webOpen,
+			reconnectMs: earlyParsed.webReconnectMs,
+		});
+		return;
+	}
+
 	// Run migrations (pass cwd for project-local migrations)
 	const { migratedAuthProviders: migratedProviders, deprecationWarnings } = runMigrations(process.cwd());
 
@@ -616,7 +639,7 @@ export async function main(args: string[]) {
 
 	const { initialMessage, initialImages } = await prepareInitialMessage(parsed, settingsManager.getImageAutoResize());
 	const isInteractive = !parsed.print && parsed.mode === undefined;
-	const mode = parsed.mode || "text";
+	const mode: "text" | "json" | "rpc" = parsed.mode === "json" || parsed.mode === "rpc" ? parsed.mode : "text";
 	initTheme(settingsManager.getTheme(), isInteractive);
 
 	// Show deprecation warnings in interactive mode

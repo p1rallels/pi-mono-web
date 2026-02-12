@@ -7,3 +7,4 @@ export { type PrintModeOptions, runPrintMode } from "./print-mode.js";
 export { type ModelInfo, RpcClient, type RpcClientOptions, type RpcEventListener } from "./rpc/rpc-client.js";
 export { runRpcMode } from "./rpc/rpc-mode.js";
 export type { RpcCommand, RpcResponse, RpcSessionState } from "./rpc/rpc-types.js";
+export { runWebMode, type WebModeOptions } from "./web/web-mode.js";

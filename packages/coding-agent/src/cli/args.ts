@@ -7,7 +7,7 @@ import chalk from "chalk";
 import { APP_NAME, CONFIG_DIR_NAME, ENV_AGENT_DIR } from "../config.js";
 import { allTools, type ToolName } from "../core/tools/index.js";
 
-export type Mode = "text" | "json" | "rpc";
+export type Mode = "text" | "json" | "rpc" | "web";
 
 export interface Args {
 	provider?: string;
@@ -21,6 +21,11 @@ export interface Args {
 	help?: boolean;
 	version?: boolean;
 	mode?: Mode;
+	webHost?: string;
+	webPort?: number;
+	webToken?: string;
+	webOpen?: boolean;
+	webReconnectMs?: number;
 	noSession?: boolean;
 	session?: string;
 	sessionDir?: string;
@@ -67,8 +72,28 @@ export function parseArgs(args: string[], extensionFlags?: Map<string, { type: "
 			result.version = true;
 		} else if (arg === "--mode" && i + 1 < args.length) {
 			const mode = args[++i];
-			if (mode === "text" || mode === "json" || mode === "rpc") {
+			if (mode === "text" || mode === "json" || mode === "rpc" || mode === "web") {
 				result.mode = mode;
+			}
+		} else if (arg === "--web-host" && i + 1 < args.length) {
+			result.webHost = args[++i];
+		} else if (arg === "--web-port" && i + 1 < args.length) {
+			const value = Number.parseInt(args[++i], 10);
+			if (Number.isFinite(value) && value > 0 && value <= 65535) {
+				result.webPort = value;
+			} else {
+				console.error(chalk.yellow(`Warning: Invalid --web-port "${args[i]}". Expected 1-65535.`));
+			}
+		} else if (arg === "--web-token" && i + 1 < args.length) {
+			result.webToken = args[++i];
+		} else if (arg === "--web-open") {
+			result.webOpen = true;
+		} else if (arg === "--web-reconnect-ms" && i + 1 < args.length) {
+			const value = Number.parseInt(args[++i], 10);
+			if (Number.isFinite(value) && value >= 0) {
+				result.webReconnectMs = value;
+			} else {
+				console.error(chalk.yellow(`Warning: Invalid --web-reconnect-ms "${args[i]}". Expected >= 0.`));
 			}
 		} else if (arg === "--continue" || arg === "-c") {
 			result.continue = true;
@@ -193,7 +218,12 @@ ${chalk.bold("Options:")}
   --api-key <key>                API key (defaults to env vars)
   --system-prompt <text>         System prompt (default: coding assistant prompt)
   --append-system-prompt <text>  Append text or file contents to the system prompt
-  --mode <mode>                  Output mode: text (default), json, or rpc
+  --mode <mode>                  Output mode: text (default), json, rpc, or web
+  --web-host <host>              Web mode host (default: 127.0.0.1)
+  --web-port <port>              Web mode port (default: 4317)
+  --web-token <token>            Web mode websocket auth token (auto-generated if omitted)
+  --web-open                     Open browser automatically in web mode
+  --web-reconnect-ms <ms>        Keep PTY alive after disconnect (default: 30000)
   --print, -p                    Non-interactive mode: process prompt and exit
   --continue, -c                 Continue previous session
   --resume, -r                   Select a session to resume
@@ -234,6 +264,10 @@ ${chalk.bold("Examples:")}
 
   # Non-interactive mode (process and exit)
   ${APP_NAME} -p "List all .ts files in src/"
+
+  # Web mode (exact TUI in browser)
+  ${APP_NAME} --mode web
+  ${APP_NAME} --mode web --web-open
 
   # Multiple messages (interactive)
   ${APP_NAME} "Read package.json" "What dependencies do we have?"

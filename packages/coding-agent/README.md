@@ -18,7 +18,7 @@ Pi is a minimal terminal coding harness. Adapt pi to your workflows, not the oth
 
 Pi ships with powerful defaults but skips features like sub agents and plan mode. Instead, you can ask pi to build what you want or install a third party pi package that matches your workflow.
 
-Pi runs in four modes: interactive, print or JSON, RPC for process integration, and an SDK for embedding in your own apps. See [openclaw/openclaw](https://github.com/openclaw/openclaw) for a real-world SDK integration.
+Pi runs in five modes: interactive, print or JSON, web (exact terminal replica in browser), RPC for process integration, and an SDK for embedding in your own apps. See [openclaw/openclaw](https://github.com/openclaw/openclaw) for a real-world SDK integration.
 
 ## Table of Contents
 
@@ -391,6 +391,18 @@ pi --mode rpc
 
 See [docs/rpc.md](docs/rpc.md) for the protocol.
 
+### Web Mode
+
+For exact interactive-mode parity in a browser, run web mode:
+
+```bash
+pi --mode web
+```
+
+Then open `http://127.0.0.1:4317` (or use `--web-open`).
+
+Web mode runs the real interactive CLI in a PTY and streams terminal I/O over WebSocket to xterm.js, so keybindings and rendering behavior match terminal mode.
+
 ---
 
 ## Philosophy
@@ -436,6 +448,7 @@ pi config                   # Enable/disable package resources
 | (default) | Interactive mode |
 | `-p`, `--print` | Print response and exit |
 | `--mode json` | Output all events as JSON lines (see [docs/json.md](docs/json.md)) |
+| `--mode web` | Serve interactive TUI in browser (exact terminal replica) |
 | `--mode rpc` | RPC mode for process integration (see [docs/rpc.md](docs/rpc.md)) |
 | `--export <in> [out]` | Export session to HTML |
 
@@ -490,6 +503,11 @@ Combine `--no-*` with explicit flags to load exactly what you need, ignoring set
 |--------|-------------|
 | `--system-prompt <text>` | Replace default prompt (context files and skills still appended) |
 | `--append-system-prompt <text>` | Append to system prompt |
+| `--web-host <host>` | Web mode bind host (default: `127.0.0.1`) |
+| `--web-port <port>` | Web mode port (default: `4317`) |
+| `--web-token <token>` | WebSocket auth token (auto-generated if omitted) |
+| `--web-open` | Open browser automatically in web mode |
+| `--web-reconnect-ms <ms>` | Keep PTY alive after disconnect (default: `30000`) |
 | `--verbose` | Force verbose startup |
 | `-h`, `--help` | Show help |
 | `-v`, `--version` | Show version |
