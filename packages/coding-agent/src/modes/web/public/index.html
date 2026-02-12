@@ -2,7 +2,7 @@
 <html lang="en">
 	<head>
 		<meta charset="UTF-8" />
-		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
 		<title>pi --mode web</title>
 		<link rel="stylesheet" href="/vendor/xterm.css" />
 		<style>
@@ -15,15 +15,19 @@
 				--good: #34d399;
 				--warn: #f59e0b;
 				--bad: #f87171;
+				--app-height: 100vh;
 			}
 			* {
 				box-sizing: border-box;
+				min-width: 0;
 			}
 			html,
 			body {
 				width: 100%;
 				height: 100%;
 				margin: 0;
+				overflow: hidden;
+				overscroll-behavior: none;
 			}
 			body {
 				background: radial-gradient(1200px 700px at 10% -10%, #1e3a8a33 0%, var(--bg) 45%);
@@ -34,12 +38,16 @@
 					"SFMono-Regular",
 					Menlo,
 					monospace;
+				-webkit-text-size-adjust: 100%;
 			}
 			main {
-				height: 100%;
-				padding: 12px;
+				width: 100%;
+				max-width: 100vw;
+				height: var(--app-height);
+				padding: max(8px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right))
+					calc(10px + env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
 				display: grid;
-				grid-template-rows: auto 1fr;
+				grid-template-rows: auto 1fr auto;
 				gap: 10px;
 			}
 			.topbar {
@@ -47,13 +55,18 @@
 				border: 1px solid var(--line);
 				border-radius: 10px;
 				padding: 8px 10px;
-				display: flex;
+				display: grid;
+				grid-template-columns: auto auto 1fr auto;
 				align-items: center;
 				gap: 12px;
 				font-size: 12px;
 			}
+			.title {
+				font-weight: 600;
+			}
 			.status {
 				font-weight: 700;
+				justify-self: start;
 			}
 			.status.connecting {
 				color: var(--warn);
@@ -81,30 +94,110 @@
 				overflow: hidden;
 				min-height: 0;
 				padding: 6px;
+				min-width: 0;
 			}
 			#terminal {
 				width: 100%;
 				height: 100%;
 				min-height: 0;
+				min-width: 0;
+			}
+			#terminal .xterm {
+				height: 100%;
+			}
+			#terminal .xterm-viewport {
+				-webkit-overflow-scrolling: touch;
 			}
 			.detail {
 				color: var(--muted);
+				min-width: 0;
 				white-space: nowrap;
 				overflow: hidden;
 				text-overflow: ellipsis;
+			}
+			.mobile-keybar {
+				display: none;
+				border: 1px solid var(--line);
+				border-radius: 10px;
+				padding: 6px;
+				background: color-mix(in srgb, var(--panel) 92%, transparent);
+				gap: 6px;
+			}
+			.mobile-keybar-row {
+				display: grid;
+				grid-template-columns: repeat(4, minmax(0, 1fr));
+				gap: 6px;
+			}
+			.mobile-keybar button {
+				min-height: 34px;
+				padding: 6px 4px;
+				font-size: 12px;
+				border-radius: 7px;
+				background: #152036;
+			}
+			body.mobile-ui-enabled .mobile-keybar {
+				display: grid;
+			}
+			@media (max-width: 900px) {
+				main {
+					gap: 8px;
+				}
+				.topbar {
+					grid-template-columns: 1fr auto;
+					grid-template-areas:
+						"title status"
+						"detail detail"
+						"reconnect reconnect";
+					gap: 7px;
+				}
+				.title {
+					grid-area: title;
+				}
+				#status {
+					grid-area: status;
+					justify-self: end;
+				}
+				#detail {
+					grid-area: detail;
+					white-space: normal;
+					display: -webkit-box;
+					-webkit-line-clamp: 2;
+					-webkit-box-orient: vertical;
+				}
+				#reconnect {
+					grid-area: reconnect;
+					width: 100%;
+				}
+				#terminal-wrapper {
+					padding: 4px;
+				}
 			}
 		</style>
 	</head>
 	<body>
 		<main>
 			<section class="topbar">
-				<div>pi web terminal</div>
+				<div class="title">pi web terminal</div>
 				<div id="status" class="status connecting">connecting</div>
 				<div id="detail" class="detail">Waiting for terminal session...</div>
 				<button id="reconnect" type="button">Reconnect</button>
 			</section>
 			<section id="terminal-wrapper">
 				<div id="terminal"></div>
+			</section>
+			<section id="mobile-keybar" class="mobile-keybar" aria-label="Mobile terminal controls" aria-hidden="true">
+				<div class="mobile-keybar-row">
+					<button type="button" data-key="esc">Esc</button>
+					<button type="button" data-key="tab">Tab</button>
+					<button type="button" data-key="up">Up</button>
+					<button type="button" data-key="down">Down</button>
+				</div>
+				<div class="mobile-keybar-row">
+					<button type="button" data-key="left">Left</button>
+					<button type="button" data-key="right">Right</button>
+					<button type="button" data-key="enter">Enter</button>
+					<button type="button" data-key="ctrlc">Ctrl+C</button>
+				</div>
 			</section>
 		</main>
 

@@ -3,10 +3,34 @@ const statusEl = document.getElementById("status");
 const detailEl = document.getElementById("detail");
 const reconnectButton = document.getElementById("reconnect");
 const terminalEl = document.getElementById("terminal");
+const terminalWrapperEl = document.getElementById("terminal-wrapper");
+const mobileKeybarEl = document.getElementById("mobile-keybar");
+const mobileKeyButtons = Array.from(document.querySelectorAll("#mobile-keybar [data-key]"));
+const mobileWidthQuery = window.matchMedia("(max-width: 900px)");
+const coarsePointerQuery = window.matchMedia("(pointer: coarse)");
 
 if (!bootstrap || typeof bootstrap.token !== "string" || typeof bootstrap.wsPath !== "string") {
 	throw new Error("Invalid web bootstrap configuration");
 }
+
+if (!statusEl || !detailEl || !reconnectButton || !terminalEl || !terminalWrapperEl || !mobileKeybarEl) {
+	throw new Error("Missing required web terminal UI elements");
+}
+
+const MOBILE_KEY_SEQUENCES = {
+	esc: "\u001b",
+	tab: "\t",
+	up: "\u001b[A",
+	down: "\u001b[B",
+	left: "\u001b[D",
+	right: "\u001b[C",
+	enter: "\r",
+	ctrlc: "\u0003",
+};
+
+const TOUCH_SCROLL_PIXELS_PER_LINE = 18;
+const HORIZONTAL_SWIPE_THRESHOLD = 54;
+const VERTICAL_SWIPE_TOLERANCE = 24;
 
 const terminal = new Terminal({
 	cursorBlink: true,
@@ -26,12 +50,37 @@ const terminal = new Terminal({
 const fitAddon = new FitAddon.FitAddon();
 terminal.loadAddon(fitAddon);
 terminal.open(terminalEl);
-fitAddon.fit();
-terminal.focus();
 
 let socket = null;
 let reconnectTimer = null;
 let isStopped = false;
+let fitTimer = null;
+let mobileUiEnabled = false;
+let touchSession = null;
+
+function isTouchDevice() {
+	return navigator.maxTouchPoints > 0 || coarsePointerQuery.matches;
+}
+
+function updateViewportHeight() {
+	const viewport = window.visualViewport;
+	const nextHeight = viewport ? Math.round(viewport.height) : window.innerHeight;
+	document.documentElement.style.setProperty("--app-height", `${Math.max(nextHeight, 320)}px`);
+}
+
+function setMobileUiEnabled(enabled) {
+	if (mobileUiEnabled === enabled) return;
+	mobileUiEnabled = enabled;
+	document.body.classList.toggle("mobile-ui-enabled", mobileUiEnabled);
+	mobileKeybarEl.setAttribute("aria-hidden", mobileUiEnabled ? "false" : "true");
+	if (!mobileUiEnabled) {
+		touchSession = null;
+	}
+}
+
+function refreshMobileUiMode() {
+	setMobileUiEnabled(isTouchDevice() && mobileWidthQuery.matches);
+}
 
 function setStatus(state, detail) {
 	statusEl.textContent = state;
@@ -55,12 +104,32 @@ function sendMessage(message) {
 	socket.send(JSON.stringify(message));
 }
 
+function sendInput(data) {
+	sendMessage({ type: "input", data });
+	terminal.focus();
+}
+
 function sendResize() {
 	sendMessage({
 		type: "resize",
 		cols: terminal.cols,
 		rows: terminal.rows,
 	});
+}
+
+function fitTerminal() {
+	fitAddon.fit();
+	sendResize();
+}
+
+function scheduleFit(delay = 70) {
+	if (fitTimer) {
+		window.clearTimeout(fitTimer);
+	}
+	fitTimer = window.setTimeout(() => {
+		fitTimer = null;
+		fitTerminal();
+	}, delay);
 }
 
 function scheduleReconnect() {
@@ -104,7 +173,6 @@ function handleServerMessage(rawData) {
 
 	if (message.type === "error" && typeof message.message === "string") {
 		terminal.writeln(`\r\n[host error] ${message.message}\r\n`);
-		return;
 	}
 }
 
@@ -138,19 +206,82 @@ function connect() {
 	});
 }
 
+function handleMobileKeyClick(event) {
+	const key = event.currentTarget?.getAttribute("data-key");
+	if (!key) return;
+	const sequence = MOBILE_KEY_SEQUENCES[key];
+	if (!sequence) return;
+	sendInput(sequence);
+}
+
+for (const button of mobileKeyButtons) {
+	button.addEventListener("pointerdown", (event) => {
+		if (!mobileUiEnabled) return;
+		event.preventDefault();
+		terminal.focus();
+	});
+	button.addEventListener("click", handleMobileKeyClick);
+}
+
+function handleTouchStart(event) {
+	if (!mobileUiEnabled || event.touches.length !== 1) return;
+	const touch = event.touches[0];
+	touchSession = {
+		lastX: touch.clientX,
+		lastY: touch.clientY,
+		totalX: 0,
+		totalY: 0,
+		scrollRemainder: 0,
+		didScroll: false,
+	};
+	terminal.focus();
+}
+
+function handleTouchMove(event) {
+	if (!mobileUiEnabled || !touchSession || event.touches.length !== 1) return;
+
+	const touch = event.touches[0];
+	const deltaX = touch.clientX - touchSession.lastX;
+	const deltaY = touch.clientY - touchSession.lastY;
+	touchSession.lastX = touch.clientX;
+	touchSession.lastY = touch.clientY;
+	touchSession.totalX += deltaX;
+	touchSession.totalY += deltaY;
+
+	if (Math.abs(touchSession.totalY) < Math.abs(touchSession.totalX)) {
+		return;
+	}
+
+	event.preventDefault();
+	touchSession.scrollRemainder += deltaY;
+	const lines = Math.trunc(-touchSession.scrollRemainder / TOUCH_SCROLL_PIXELS_PER_LINE);
+	if (lines === 0) return;
+
+	terminal.scrollLines(lines);
+	touchSession.scrollRemainder += lines * TOUCH_SCROLL_PIXELS_PER_LINE;
+	touchSession.didScroll = true;
+}
+
+function handleTouchEnd() {
+	if (!mobileUiEnabled || !touchSession) return;
+	const { totalX, totalY, didScroll } = touchSession;
+	touchSession = null;
+
+	if (didScroll) return;
+	if (Math.abs(totalX) < HORIZONTAL_SWIPE_THRESHOLD || Math.abs(totalY) > VERTICAL_SWIPE_TOLERANCE) {
+		return;
+	}
+
+	sendInput(totalX > 0 ? MOBILE_KEY_SEQUENCES.right : MOBILE_KEY_SEQUENCES.left);
+}
+
+terminalWrapperEl.addEventListener("touchstart", handleTouchStart, { passive: true });
+terminalWrapperEl.addEventListener("touchmove", handleTouchMove, { passive: false });
+terminalWrapperEl.addEventListener("touchend", handleTouchEnd, { passive: true });
+terminalWrapperEl.addEventListener("touchcancel", handleTouchEnd, { passive: true });
+
 terminal.onData((data) => {
 	sendMessage({ type: "input", data });
-});
-
-let resizeTimer = null;
-window.addEventListener("resize", () => {
-	if (resizeTimer) {
-		window.clearTimeout(resizeTimer);
-	}
-	resizeTimer = window.setTimeout(() => {
-		fitAddon.fit();
-		sendResize();
-	}, 80);
 });
 
 reconnectButton.addEventListener("click", () => {
@@ -161,12 +292,55 @@ reconnectButton.addEventListener("click", () => {
 	connect();
 });
 
+const handleViewportChange = () => {
+	updateViewportHeight();
+	refreshMobileUiMode();
+	scheduleFit(45);
+};
+
+window.addEventListener("resize", handleViewportChange);
+window.addEventListener("orientationchange", handleViewportChange);
+if (window.visualViewport) {
+	window.visualViewport.addEventListener("resize", handleViewportChange);
+	window.visualViewport.addEventListener("scroll", handleViewportChange);
+}
+
+if (typeof mobileWidthQuery.addEventListener === "function") {
+	mobileWidthQuery.addEventListener("change", handleViewportChange);
+} else if (typeof mobileWidthQuery.addListener === "function") {
+	mobileWidthQuery.addListener(handleViewportChange);
+}
+
+if (typeof coarsePointerQuery.addEventListener === "function") {
+	coarsePointerQuery.addEventListener("change", handleViewportChange);
+} else if (typeof coarsePointerQuery.addListener === "function") {
+	coarsePointerQuery.addListener(handleViewportChange);
+}
+
 window.addEventListener("beforeunload", () => {
 	if (socket && socket.readyState <= WebSocket.OPEN) {
 		socket.close();
 	}
+	if (window.visualViewport) {
+		window.visualViewport.removeEventListener("resize", handleViewportChange);
+		window.visualViewport.removeEventListener("scroll", handleViewportChange);
+	}
+	if (typeof mobileWidthQuery.removeEventListener === "function") {
+		mobileWidthQuery.removeEventListener("change", handleViewportChange);
+	} else if (typeof mobileWidthQuery.removeListener === "function") {
+		mobileWidthQuery.removeListener(handleViewportChange);
+	}
+	if (typeof coarsePointerQuery.removeEventListener === "function") {
+		coarsePointerQuery.removeEventListener("change", handleViewportChange);
+	} else if (typeof coarsePointerQuery.removeListener === "function") {
+		coarsePointerQuery.removeListener(handleViewportChange);
+	}
 });
 
+updateViewportHeight();
+refreshMobileUiMode();
+fitTerminal();
+terminal.focus();
 terminal.writeln("pi web terminal ready.");
 terminal.writeln("Waiting for session output...\r\n");
 setStatus("connecting", "Booting interactive session...");
