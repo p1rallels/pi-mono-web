@@ -25,6 +25,11 @@ const MOBILE_KEY_SEQUENCES = {
 
 const TOUCH_SCROLL_PIXELS_PER_LINE = 18;
 const TAP_FOCUS_THRESHOLD = 8;
+const MOMENTUM_MIN_START_VELOCITY = 0.08;
+const MOMENTUM_STOP_VELOCITY = 0.01;
+const MOMENTUM_MAX_VELOCITY = 1.6;
+const MOMENTUM_DECAY_PER_FRAME = 0.92;
+const FRAME_DURATION_MS = 16.67;
 
 const terminal = new Terminal({
 	cursorBlink: true,
@@ -55,6 +60,10 @@ let lockedMobileFontSize = null;
 let pinAnimationFrame = null;
 let pinnedViewportUntil = 0;
 let reconnectingManually = false;
+let momentumAnimationFrame = null;
+let momentumVelocity = 0;
+let momentumLastTime = 0;
+let momentumRemainder = 0;
 
 function isTouchDevice() {
 	return navigator.maxTouchPoints > 0 || coarsePointerQuery.matches;
@@ -181,6 +190,67 @@ function shouldKeepViewportPinned() {
 	return viewportEl.scrollTop + viewportEl.clientHeight >= viewportEl.scrollHeight - 8;
 }
 
+function scrollTerminalByLines(lines) {
+	if (lines === 0) return false;
+	const viewportEl = getTerminalViewportElement();
+	const before = viewportEl ? viewportEl.scrollTop : null;
+	terminal.scrollLines(lines);
+	if (!viewportEl || before === null) return true;
+	return viewportEl.scrollTop !== before;
+}
+
+function stopMomentumScroll() {
+	if (momentumAnimationFrame !== null) {
+		window.cancelAnimationFrame(momentumAnimationFrame);
+		momentumAnimationFrame = null;
+	}
+	momentumVelocity = 0;
+	momentumRemainder = 0;
+	momentumLastTime = 0;
+}
+
+function startMomentumScroll(initialVelocity) {
+	if (!mobileUiEnabled) return;
+
+	const clampedVelocity = Math.max(-MOMENTUM_MAX_VELOCITY, Math.min(MOMENTUM_MAX_VELOCITY, initialVelocity));
+	if (Math.abs(clampedVelocity) < MOMENTUM_MIN_START_VELOCITY) return;
+
+	stopMomentumScroll();
+	momentumVelocity = clampedVelocity;
+	momentumLastTime = performance.now();
+
+	const step = (now) => {
+		const deltaMs = Math.max(1, now - momentumLastTime);
+		momentumLastTime = now;
+
+		const decay = Math.pow(MOMENTUM_DECAY_PER_FRAME, deltaMs / FRAME_DURATION_MS);
+		momentumVelocity *= decay;
+
+		if (Math.abs(momentumVelocity) < MOMENTUM_STOP_VELOCITY) {
+			stopMomentumScroll();
+			return;
+		}
+
+		momentumRemainder += momentumVelocity * deltaMs;
+		const lines = Math.trunc(-momentumRemainder / TOUCH_SCROLL_PIXELS_PER_LINE);
+
+		let moved = true;
+		if (lines !== 0) {
+			moved = scrollTerminalByLines(lines);
+			momentumRemainder += lines * TOUCH_SCROLL_PIXELS_PER_LINE;
+		}
+
+		if (!moved) {
+			stopMomentumScroll();
+			return;
+		}
+
+		momentumAnimationFrame = window.requestAnimationFrame(step);
+	};
+
+	momentumAnimationFrame = window.requestAnimationFrame(step);
+}
+
 function pinViewportFor(durationMs = 150) {
 	if (!mobileUiEnabled) return;
 	pinnedViewportUntil = performance.now() + durationMs;
@@ -294,10 +364,13 @@ for (const button of mobileKeyButtons) {
 
 function handleTouchStart(event) {
 	if (!mobileUiEnabled || event.touches.length !== 1) return;
+	stopMomentumScroll();
 	const touch = event.touches[0];
 	touchSession = {
 		lastX: touch.clientX,
 		lastY: touch.clientY,
+		lastTime: performance.now(),
+		velocityY: 0,
 		totalX: 0,
 		totalY: 0,
 		scrollRemainder: 0,
@@ -311,8 +384,14 @@ function handleTouchMove(event) {
 	const touch = event.touches[0];
 	const deltaX = touch.clientX - touchSession.lastX;
 	const deltaY = touch.clientY - touchSession.lastY;
+	const now = performance.now();
+	const deltaMs = Math.max(1, now - touchSession.lastTime);
+	const instantVelocityY = deltaY / deltaMs;
+
 	touchSession.lastX = touch.clientX;
 	touchSession.lastY = touch.clientY;
+	touchSession.lastTime = now;
+	touchSession.velocityY = touchSession.velocityY * 0.75 + instantVelocityY * 0.25;
 	touchSession.totalX += deltaX;
 	touchSession.totalY += deltaY;
 
@@ -325,17 +404,22 @@ function handleTouchMove(event) {
 	const lines = Math.trunc(-touchSession.scrollRemainder / TOUCH_SCROLL_PIXELS_PER_LINE);
 	if (lines === 0) return;
 
-	terminal.scrollLines(lines);
+	const moved = scrollTerminalByLines(lines);
 	touchSession.scrollRemainder += lines * TOUCH_SCROLL_PIXELS_PER_LINE;
-	touchSession.didScroll = true;
+	if (moved) {
+		touchSession.didScroll = true;
+	}
 }
 
 function handleTouchEnd() {
 	if (!mobileUiEnabled || !touchSession) return;
-	const { totalX, totalY, didScroll } = touchSession;
+	const { totalX, totalY, didScroll, velocityY } = touchSession;
 	touchSession = null;
 
-	if (didScroll) return;
+	if (didScroll) {
+		startMomentumScroll(velocityY);
+		return;
+	}
 
 	if (Math.abs(totalX) <= TAP_FOCUS_THRESHOLD && Math.abs(totalY) <= TAP_FOCUS_THRESHOLD) {
 		terminal.focus();
@@ -403,6 +487,7 @@ window.addEventListener("beforeunload", () => {
 	if (socket && socket.readyState <= WebSocket.OPEN) {
 		socket.close();
 	}
+	stopMomentumScroll();
 	if (pinAnimationFrame !== null) {
 		window.cancelAnimationFrame(pinAnimationFrame);
 		pinAnimationFrame = null;
