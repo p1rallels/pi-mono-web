@@ -7,6 +7,8 @@ const controlPanelEl = document.getElementById("control-panel");
 const panelTabs = Array.from(document.querySelectorAll(".panel-tab"));
 const panelSections = Array.from(document.querySelectorAll(".panel-section"));
 const panelStatusTextEl = document.getElementById("panel-status-text");
+const panelSyncBadgeEl = document.getElementById("panel-sync-badge");
+const panelSyncLabelEl = document.getElementById("panel-sync-label");
 const panelActiveSessionEl = document.getElementById("panel-active-session");
 const panelStartSessionButton = document.getElementById("panel-start-session");
 const panelStopSessionButton = document.getElementById("panel-stop-session");
@@ -40,6 +42,8 @@ if (
 	!panelBackdropEl ||
 	!controlPanelEl ||
 	!panelStatusTextEl ||
+	!panelSyncBadgeEl ||
+	!panelSyncLabelEl ||
 	!panelActiveSessionEl ||
 	!panelStartSessionButton ||
 	!panelStopSessionButton ||
@@ -187,6 +191,25 @@ function statusLabel(state) {
 	if (state === "connecting") return "connecting";
 	if (state === "stopped") return "stopped";
 	return state;
+}
+
+function panelSyncStateLabel(state) {
+	if (state === "syncing") return "Syncing";
+	if (state === "recovered") return "Recovered";
+	return "Live";
+}
+
+function renderPanelSyncBadge() {
+	const state =
+		panelSessionSyncState === "syncing" || panelSessionSyncState === "recovered"
+			? panelSessionSyncState
+			: "live";
+	const label = panelSyncStateLabel(state);
+	panelSyncLabelEl.textContent = label;
+	panelSyncBadgeEl.classList.remove("panel-sync-badge-live", "panel-sync-badge-syncing", "panel-sync-badge-recovered");
+	panelSyncBadgeEl.classList.add(`panel-sync-badge-${state}`);
+	panelSyncBadgeEl.setAttribute("data-state", state);
+	panelSyncBadgeEl.setAttribute("aria-label", `Session sync: ${label.toLowerCase()}`);
 }
 
 function setStatus(state) {
@@ -556,9 +579,8 @@ function renderSavedSessions() {
 function renderPanel() {
 	const hostState = panelHostState || { state: "unknown", reason: undefined, connected: false };
 	const reasonText = hostState.reason ? ` (${hostState.reason})` : "";
-	const syncLabel =
-		panelSessionSyncState === "syncing" ? "Syncing" : panelSessionSyncState === "recovered" ? "Recovered" : "Live";
-	panelStatusTextEl.textContent = `State: ${hostState.state}${reasonText} • ${syncLabel}`;
+	renderPanelSyncBadge();
+	panelStatusTextEl.textContent = `State: ${hostState.state}${reasonText}`;
 	if (DEBUG_MODE && panelLastRestoreMeta && typeof panelLastRestoreMeta === "object") {
 		const restoreMode = typeof panelLastRestoreMeta.mode === "string" ? panelLastRestoreMeta.mode : "unknown";
 		const restorePages = asNonNegativeInteger(panelLastRestoreMeta.pagesFetched);
