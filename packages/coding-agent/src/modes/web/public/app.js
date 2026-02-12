@@ -1,9 +1,30 @@
 const bootstrap = window.__PI_WEB_BOOTSTRAP__;
 const reconnectButton = document.getElementById("reconnect");
+const menuToggleButton = document.getElementById("menu-toggle");
+const menuCloseButton = document.getElementById("menu-close");
+const panelBackdropEl = document.getElementById("panel-backdrop");
+const controlPanelEl = document.getElementById("control-panel");
+const panelTabs = Array.from(document.querySelectorAll(".panel-tab"));
+const panelSections = Array.from(document.querySelectorAll(".panel-section"));
+const panelStatusTextEl = document.getElementById("panel-status-text");
+const panelActiveSessionEl = document.getElementById("panel-active-session");
+const panelStartSessionButton = document.getElementById("panel-start-session");
+const panelStopSessionButton = document.getElementById("panel-stop-session");
+const panelRestartSessionButton = document.getElementById("panel-restart-session");
+const panelRefreshButton = document.getElementById("panel-refresh");
+const panelProviderInput = document.getElementById("panel-provider-input");
+const panelModelInput = document.getElementById("panel-model-input");
+const panelNoSessionInput = document.getElementById("panel-no-session");
+const panelSelectedProjectEl = document.getElementById("panel-selected-project");
+const panelProjectPathInput = document.getElementById("panel-project-path");
+const panelProjectIdInput = document.getElementById("panel-project-id");
+const panelProjectAddButton = document.getElementById("panel-project-add");
+const panelProjectListEl = document.getElementById("panel-project-list");
+const panelRecentListEl = document.getElementById("panel-recent-list");
+const panelSavedSessionListEl = document.getElementById("panel-saved-session-list");
 const terminalEl = document.getElementById("terminal");
 const terminalWrapperEl = document.getElementById("terminal-wrapper");
 const mobileKeybarEl = document.getElementById("mobile-keybar");
-const connectionDotEl = document.getElementById("connection-dot");
 const mobileKeyButtons = Array.from(document.querySelectorAll("#mobile-keybar [data-key]"));
 const mobileWidthQuery = window.matchMedia("(max-width: 900px)");
 const coarsePointerQuery = window.matchMedia("(pointer: coarse)");
@@ -12,7 +33,32 @@ if (!bootstrap || typeof bootstrap.token !== "string" || typeof bootstrap.wsPath
 	throw new Error("Invalid web bootstrap configuration");
 }
 
-if (!reconnectButton || !terminalEl || !terminalWrapperEl || !mobileKeybarEl || !connectionDotEl) {
+if (
+	!reconnectButton ||
+	!menuToggleButton ||
+	!menuCloseButton ||
+	!panelBackdropEl ||
+	!controlPanelEl ||
+	!panelStatusTextEl ||
+	!panelActiveSessionEl ||
+	!panelStartSessionButton ||
+	!panelStopSessionButton ||
+	!panelRestartSessionButton ||
+	!panelRefreshButton ||
+	!panelProviderInput ||
+	!panelModelInput ||
+	!panelNoSessionInput ||
+	!panelSelectedProjectEl ||
+	!panelProjectPathInput ||
+	!panelProjectIdInput ||
+	!panelProjectAddButton ||
+	!panelProjectListEl ||
+	!panelRecentListEl ||
+	!panelSavedSessionListEl ||
+	!terminalEl ||
+	!terminalWrapperEl ||
+	!mobileKeybarEl
+) {
 	throw new Error("Missing required web terminal UI elements");
 }
 
@@ -57,7 +103,6 @@ terminal.open(terminalEl);
 
 let socket = null;
 let reconnectTimer = null;
-let isStopped = false;
 let fitTimer = null;
 let mobileUiEnabled = false;
 let touchSession = null;
@@ -69,6 +114,18 @@ let momentumAnimationFrame = null;
 let momentumVelocity = 0;
 let momentumLastTime = 0;
 let momentumRemainder = 0;
+let panelOpen = false;
+let panelActiveTab = "session";
+let panelSelectedProjectId = null;
+let panelHostState = null;
+let panelProjects = [];
+let panelRecentSessions = [];
+let panelSavedSessions = [];
+let panelSavedSessionsSource = null;
+let panelSavedSessionsInFlight = null;
+let panelSyncInFlight = null;
+let panelMessageTimeout = null;
+let panelTransientMessage = null;
 
 function isTouchDevice() {
 	return navigator.maxTouchPoints > 0 || coarsePointerQuery.matches;
@@ -95,11 +152,544 @@ function refreshMobileUiMode() {
 	setMobileUiEnabled(isTouchDevice() && mobileWidthQuery.matches);
 }
 
+function statusLabel(state) {
+	if (state === "connected") return "running";
+	if (state === "disconnected") return "disconnected";
+	if (state === "connecting") return "connecting";
+	if (state === "stopped") return "stopped";
+	return state;
+}
+
 function setStatus(state) {
 	const isConnected = state === "connected" || state === "running";
-	connectionDotEl.classList.toggle("connected", isConnected);
-	connectionDotEl.setAttribute("aria-label", isConnected ? "Connected" : "Disconnected");
 	reconnectButton.setAttribute("title", isConnected ? "Reconnect (connected)" : "Reconnect");
+	if (menuToggleButton) {
+		menuToggleButton.setAttribute("title", `Session menu (${statusLabel(state)})`);
+	}
+	if (panelHostState) {
+		panelHostState = { ...panelHostState, connected: isConnected, state: statusLabel(state) };
+		renderPanel();
+	}
+}
+
+function setPanelOpen(open) {
+	panelOpen = open;
+	document.body.classList.toggle("panel-open", panelOpen);
+	controlPanelEl.setAttribute("aria-hidden", panelOpen ? "false" : "true");
+	if (panelOpen) {
+		void syncPanelState(true).then(() => {
+			void syncSavedSessions(true);
+		});
+	}
+}
+
+function setPanelTab(tabName) {
+	panelActiveTab = tabName === "repos" ? "repos" : "session";
+	for (const tab of panelTabs) {
+		const tabNameValue = tab.getAttribute("data-panel-tab");
+		const isActive = tabNameValue === panelActiveTab;
+		tab.classList.toggle("active", isActive);
+		tab.setAttribute("aria-selected", isActive ? "true" : "false");
+	}
+	for (const section of panelSections) {
+		const sectionName = section.getAttribute("data-panel-section");
+		section.hidden = sectionName !== panelActiveTab;
+	}
+	if (panelActiveTab === "session") {
+		void syncSavedSessions(false);
+	}
+}
+
+function trimToUndefined(value) {
+	if (typeof value !== "string") return undefined;
+	const trimmed = value.trim();
+	return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function getSelectedProject() {
+	if (!panelSelectedProjectId) return null;
+	return panelProjects.find((project) => project.id === panelSelectedProjectId) || null;
+}
+
+function formatRelativeTime(value) {
+	if (typeof value !== "string") return "";
+	const timestamp = Date.parse(value);
+	if (!Number.isFinite(timestamp)) return "";
+	const deltaMinutes = Math.floor((Date.now() - timestamp) / 60000);
+	if (deltaMinutes < 1) return "just now";
+	if (deltaMinutes < 60) return `${deltaMinutes}m ago`;
+	const deltaHours = Math.floor(deltaMinutes / 60);
+	if (deltaHours < 24) return `${deltaHours}h ago`;
+	const deltaDays = Math.floor(deltaHours / 24);
+	return `${deltaDays}d ago`;
+}
+
+function launchPayloadFromInputs() {
+	return {
+		provider: trimToUndefined(panelProviderInput.value),
+		model: trimToUndefined(panelModelInput.value),
+		noSession: Boolean(panelNoSessionInput.checked),
+	};
+}
+
+function setPanelNotice(message) {
+	panelTransientMessage = message;
+	if (panelMessageTimeout) {
+		window.clearTimeout(panelMessageTimeout);
+	}
+	panelMessageTimeout = window.setTimeout(() => {
+		panelTransientMessage = null;
+		renderPanel();
+	}, 2800);
+	renderPanel();
+}
+
+function panelErrorMessage(error, fallback) {
+	if (error && typeof error === "object" && typeof error.message === "string") {
+		return error.message;
+	}
+	return fallback;
+}
+
+async function fetchJson(path, init = {}) {
+	const requestInit = {
+		cache: "no-store",
+		...init,
+	};
+	const response = await fetch(path, requestInit);
+	let body = null;
+	try {
+		body = await response.json();
+	} catch {
+		body = null;
+	}
+	if (!response.ok) {
+		const message =
+			body && typeof body === "object" && typeof body.error === "string"
+				? body.error
+				: `Request failed: ${response.status}`;
+		throw new Error(message);
+	}
+	return body;
+}
+
+function renderPanelProjects() {
+	panelProjectListEl.replaceChildren();
+	if (!Array.isArray(panelProjects) || panelProjects.length === 0) {
+		const empty = document.createElement("div");
+		empty.className = "panel-empty";
+		empty.textContent = "No repos configured.";
+		panelProjectListEl.appendChild(empty);
+		return;
+	}
+
+	for (const project of panelProjects) {
+		const item = document.createElement("div");
+		item.className = "panel-list-item";
+		if (project.id === panelSelectedProjectId) {
+			item.classList.add("active");
+		}
+
+		const title = document.createElement("div");
+		title.className = "panel-item-title";
+		title.textContent = project.id;
+
+		const path = document.createElement("div");
+		path.className = "panel-item-path";
+		path.textContent = project.path;
+
+		const row = document.createElement("div");
+		row.className = "panel-row-3";
+
+		const useButton = document.createElement("button");
+		useButton.type = "button";
+		useButton.textContent = "Use";
+		useButton.addEventListener("click", () => {
+			panelSelectedProjectId = project.id;
+			renderPanel();
+			void syncSavedSessions(true);
+		});
+
+		const startButton = document.createElement("button");
+		startButton.type = "button";
+		startButton.textContent = "Start";
+		startButton.addEventListener("click", () => {
+			panelSelectedProjectId = project.id;
+			void startSessionFromPanel();
+		});
+
+		const deleteButton = document.createElement("button");
+		deleteButton.type = "button";
+		deleteButton.textContent = "Delete";
+		deleteButton.addEventListener("click", () => {
+			void deleteProject(project.id);
+		});
+
+		row.append(useButton, startButton, deleteButton);
+		item.append(title, path, row);
+		panelProjectListEl.appendChild(item);
+	}
+}
+
+function renderPanelRecent() {
+	panelRecentListEl.replaceChildren();
+	if (!Array.isArray(panelRecentSessions) || panelRecentSessions.length === 0) {
+		const empty = document.createElement("div");
+		empty.className = "panel-empty";
+		empty.textContent = "No recent sessions.";
+		panelRecentListEl.appendChild(empty);
+		return;
+	}
+
+	for (const session of panelRecentSessions.slice(0, 12)) {
+		const item = document.createElement("div");
+		item.className = "panel-list-item";
+
+		const title = document.createElement("div");
+		title.className = "panel-item-title";
+		title.textContent = session.projectId ? `${session.projectId}` : "Host directory";
+
+		const path = document.createElement("div");
+		path.className = "panel-item-path";
+		path.textContent = session.cwd;
+
+		const meta = document.createElement("div");
+		meta.className = "panel-item-meta";
+		const modelLabel = session.model ? `${session.provider || "default"}/${session.model}` : session.provider || "default";
+		meta.textContent = `${session.state} • ${modelLabel}`;
+
+		const row = document.createElement("div");
+		row.className = "panel-row";
+
+		const relaunchButton = document.createElement("button");
+		relaunchButton.type = "button";
+		relaunchButton.textContent = "Relaunch";
+		relaunchButton.addEventListener("click", () => {
+			void relaunchRecentSession(session);
+		});
+
+		const useButton = document.createElement("button");
+		useButton.type = "button";
+		useButton.textContent = "Use Repo";
+		useButton.disabled = !session.projectId;
+		useButton.addEventListener("click", () => {
+			if (!session.projectId) return;
+			panelSelectedProjectId = session.projectId;
+			renderPanel();
+			void syncSavedSessions(true);
+		});
+
+		row.append(relaunchButton, useButton);
+		item.append(title, path, meta, row);
+		panelRecentListEl.appendChild(item);
+	}
+}
+
+function renderSavedSessions() {
+	panelSavedSessionListEl.replaceChildren();
+	const project = getSelectedProject();
+	if (!project) {
+		const empty = document.createElement("div");
+		empty.className = "panel-empty";
+		empty.textContent = "Select a repo in Repos first.";
+		panelSavedSessionListEl.appendChild(empty);
+		return;
+	}
+
+	if (!Array.isArray(panelSavedSessions) || panelSavedSessions.length === 0) {
+		const empty = document.createElement("div");
+		empty.className = "panel-empty";
+		empty.textContent = "No saved sessions in this repo.";
+		panelSavedSessionListEl.appendChild(empty);
+		return;
+	}
+
+	for (const session of panelSavedSessions.slice(0, 20)) {
+		const item = document.createElement("div");
+		item.className = "panel-list-item";
+
+		const title = document.createElement("div");
+		title.className = "panel-item-title";
+		title.textContent = session.name ? `${session.name}` : `Session ${session.id.slice(0, 8)}`;
+
+		const path = document.createElement("div");
+		path.className = "panel-item-path";
+		path.textContent = session.path;
+
+		const meta = document.createElement("div");
+		meta.className = "panel-item-meta";
+		meta.textContent = `${session.messageCount} msgs • ${formatRelativeTime(session.modified)}`;
+
+		const row = document.createElement("div");
+		row.className = "panel-row";
+
+		const resumeButton = document.createElement("button");
+		resumeButton.type = "button";
+		resumeButton.textContent = "Resume";
+		resumeButton.addEventListener("click", () => {
+			void startSessionFromPanel({
+				projectId: project.id,
+				sessionPath: session.path,
+				noSession: false,
+			});
+		});
+
+		const useButton = document.createElement("button");
+		useButton.type = "button";
+		useButton.textContent = "Copy Prompt";
+		useButton.disabled = typeof session.firstMessage !== "string" || session.firstMessage.length === 0;
+		useButton.addEventListener("click", async () => {
+			const text = typeof session.firstMessage === "string" ? session.firstMessage : "";
+			if (!text) return;
+			try {
+				await navigator.clipboard.writeText(text);
+				setPanelNotice("First prompt copied");
+			} catch {
+				setPanelNotice("Clipboard unavailable");
+			}
+		});
+
+		row.append(resumeButton, useButton);
+		item.append(title, path, meta, row);
+		panelSavedSessionListEl.appendChild(item);
+	}
+}
+
+function renderPanel() {
+	const hostState = panelHostState || { state: "unknown", reason: undefined, connected: false };
+	const reasonText = hostState.reason ? ` (${hostState.reason})` : "";
+	panelStatusTextEl.textContent = `State: ${hostState.state}${reasonText}`;
+	if (panelTransientMessage) {
+		panelStatusTextEl.textContent += ` • ${panelTransientMessage}`;
+	}
+
+	const activeSession = hostState.activeSession;
+	if (activeSession) {
+		const modelLabel = activeSession.model ? `${activeSession.provider || "default"}/${activeSession.model}` : activeSession.provider || "default";
+		panelActiveSessionEl.textContent = `${activeSession.cwd} • ${modelLabel}`;
+	} else {
+		panelActiveSessionEl.textContent = "No active session";
+	}
+
+	if (hostState.launchDefaults) {
+		if (document.activeElement !== panelProviderInput) {
+			panelProviderInput.value = hostState.launchDefaults.provider || "";
+		}
+		if (document.activeElement !== panelModelInput) {
+			panelModelInput.value = hostState.launchDefaults.model || "";
+		}
+		panelNoSessionInput.checked = Boolean(hostState.launchDefaults.noSession);
+	}
+
+	const selectedProject = getSelectedProject();
+	panelSelectedProjectEl.textContent = selectedProject
+		? `${selectedProject.id} • ${selectedProject.path}`
+		: "No repo selected.";
+
+	const hasActiveSession = Boolean(activeSession);
+	panelStopSessionButton.disabled = !hasActiveSession;
+	panelRestartSessionButton.disabled = !hasActiveSession;
+
+	renderPanelProjects();
+	renderPanelRecent();
+	renderSavedSessions();
+}
+
+async function syncPanelState(force = false) {
+	if (panelSyncInFlight && !force) {
+		return panelSyncInFlight;
+	}
+	panelSyncInFlight = (async () => {
+		const [state, projects, recent] = await Promise.all([
+			fetchJson("/api/web/state"),
+			fetchJson("/api/web/projects"),
+			fetchJson("/api/web/sessions/recent"),
+		]);
+		panelHostState = state;
+		panelProjects = Array.isArray(projects) ? projects : [];
+		panelRecentSessions = Array.isArray(recent) ? recent : [];
+		if (panelSelectedProjectId && !panelProjects.some((project) => project.id === panelSelectedProjectId)) {
+			panelSelectedProjectId = null;
+		}
+		if (!panelSelectedProjectId && state && state.activeSession && state.activeSession.projectId) {
+			panelSelectedProjectId = state.activeSession.projectId;
+		}
+		renderPanel();
+		void syncSavedSessions(false);
+	})()
+		.catch((error) => {
+			const message = panelErrorMessage(error, "Failed to sync menu state");
+			panelTransientMessage = message;
+			renderPanel();
+			terminal.writeln(`\r\n[web] ${message}\r\n`);
+		})
+		.finally(() => {
+			panelSyncInFlight = null;
+		});
+	return panelSyncInFlight;
+}
+
+async function syncSavedSessions(force = false) {
+	const project = getSelectedProject();
+	if (!project) {
+		panelSavedSessions = [];
+		panelSavedSessionsSource = null;
+		renderSavedSessions();
+		return;
+	}
+	if (
+		panelSavedSessionsInFlight &&
+		!force &&
+		panelSavedSessionsSource === project.id
+	) {
+		return panelSavedSessionsInFlight;
+	}
+	panelSavedSessionsSource = project.id;
+	panelSavedSessionsInFlight = (async () => {
+		const sessions = await fetchJson(`/api/web/sessions?projectId=${encodeURIComponent(project.id)}`);
+		panelSavedSessions = Array.isArray(sessions) ? sessions : [];
+		renderSavedSessions();
+	})()
+		.catch((error) => {
+			panelSavedSessions = [];
+			setPanelNotice(panelErrorMessage(error, "Failed to load saved sessions"));
+			renderSavedSessions();
+		})
+		.finally(() => {
+			panelSavedSessionsInFlight = null;
+		});
+	return panelSavedSessionsInFlight;
+}
+
+async function startSessionFromPanel(overrides = {}) {
+	const payload = {
+		...launchPayloadFromInputs(),
+		...overrides,
+	};
+	if (!payload.projectId && panelSelectedProjectId) {
+		payload.projectId = panelSelectedProjectId;
+	}
+	if (payload.sessionPath) {
+		payload.noSession = false;
+	}
+	try {
+		await fetchJson("/api/web/session/start", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(payload),
+		});
+		setPanelNotice("Session started");
+		await syncPanelState(true);
+		await syncSavedSessions(true);
+	} catch (error) {
+		setPanelNotice(panelErrorMessage(error, "Failed to start session"));
+	}
+}
+
+async function stopSessionFromPanel() {
+	try {
+		await fetchJson("/api/web/session/stop", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({}),
+		});
+		setPanelNotice("Session stopped");
+		await syncPanelState(true);
+		await syncSavedSessions(true);
+	} catch (error) {
+		setPanelNotice(panelErrorMessage(error, "Failed to stop session"));
+	}
+}
+
+async function restartSessionFromPanel() {
+	try {
+		await fetchJson("/api/web/session/restart", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(launchPayloadFromInputs()),
+		});
+		setPanelNotice("Session restarted");
+		await syncPanelState(true);
+		await syncSavedSessions(true);
+	} catch (error) {
+		setPanelNotice(panelErrorMessage(error, "Failed to restart session"));
+	}
+}
+
+async function addProjectFromPanel() {
+	const path = panelProjectPathInput.value.trim();
+	const id = panelProjectIdInput.value.trim();
+	if (path.length === 0) {
+		setPanelNotice("Repo path is required");
+		return;
+	}
+	try {
+		const created = await fetchJson("/api/web/projects", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify({
+				path,
+				id: id.length > 0 ? id : undefined,
+			}),
+		});
+		panelProjectPathInput.value = "";
+		panelProjectIdInput.value = "";
+		if (created && typeof created.id === "string") {
+			panelSelectedProjectId = created.id;
+		}
+		setPanelNotice("Repo added");
+		await syncPanelState(true);
+		await syncSavedSessions(true);
+	} catch (error) {
+		setPanelNotice(panelErrorMessage(error, "Failed to add repo"));
+	}
+}
+
+async function deleteProject(projectId) {
+	const project = panelProjects.find((entry) => entry.id === projectId);
+	const label = project ? project.id : projectId;
+	if (!window.confirm(`Delete repo '${label}'?`)) {
+		return;
+	}
+	try {
+		await fetchJson(`/api/web/projects/${encodeURIComponent(projectId)}`, {
+			method: "DELETE",
+		});
+		if (panelSelectedProjectId === projectId) {
+			panelSelectedProjectId = null;
+		}
+		setPanelNotice("Repo deleted");
+		await syncPanelState(true);
+		await syncSavedSessions(true);
+	} catch (error) {
+		setPanelNotice(panelErrorMessage(error, "Failed to delete repo"));
+	}
+}
+
+async function relaunchRecentSession(session) {
+	const payload = {
+		projectId: session.projectId || undefined,
+		cwd: session.projectId ? undefined : session.cwd,
+		provider: session.provider || undefined,
+		model: session.model || undefined,
+		sessionPath: session.sessionPath || undefined,
+		noSession: session.sessionPath ? false : Boolean(session.noSession),
+	};
+	try {
+		await fetchJson("/api/web/session/start", {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(payload),
+		});
+		if (session.projectId) {
+			panelSelectedProjectId = session.projectId;
+		}
+		setPanelNotice("Session relaunched");
+		await syncPanelState(true);
+		await syncSavedSessions(true);
+	} catch (error) {
+		setPanelNotice(panelErrorMessage(error, "Failed to relaunch session"));
+	}
 }
 
 function socketUrl() {
@@ -179,7 +769,6 @@ function scheduleFit(delay = 70) {
 
 function scheduleReconnect() {
 	clearReconnectTimer();
-	if (isStopped) return;
 	reconnectTimer = window.setTimeout(() => {
 		connect();
 	}, 800);
@@ -309,10 +898,9 @@ function handleServerMessage(rawData) {
 		} else if (message.state === "starting") {
 			setStatus("connecting");
 		} else if (message.state === "stopped") {
-			isStopped = true;
 			setStatus("stopped");
-			clearReconnectTimer();
 		}
+		void syncPanelState(true);
 		return;
 	}
 
@@ -322,7 +910,6 @@ function handleServerMessage(rawData) {
 }
 
 function connect() {
-	if (isStopped) return;
 	clearReconnectTimer();
 	setStatus("connecting");
 
@@ -334,6 +921,7 @@ function connect() {
 		reconnectingManually = false;
 		setStatus("connected");
 		sendResize();
+		void syncPanelState(true);
 	});
 
 	nextSocket.addEventListener("message", (event) => {
@@ -342,7 +930,6 @@ function connect() {
 	});
 
 	nextSocket.addEventListener("close", () => {
-		if (isStopped) return;
 		if (reconnectingManually) {
 			reconnectingManually = false;
 			return;
@@ -476,7 +1063,6 @@ terminal.onData((data) => {
 });
 
 reconnectButton.addEventListener("click", () => {
-	isStopped = false;
 	clearReconnectTimer();
 
 	if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
@@ -487,14 +1073,53 @@ reconnectButton.addEventListener("click", () => {
 			// Ignore close failures.
 		}
 		window.setTimeout(() => {
-			if (!isStopped) {
-				connect();
-			}
+			connect();
 		}, 40);
 		return;
 	}
 
 	connect();
+});
+
+menuToggleButton.addEventListener("click", () => {
+	setPanelOpen(!panelOpen);
+});
+
+menuCloseButton.addEventListener("click", () => {
+	setPanelOpen(false);
+});
+
+panelBackdropEl.addEventListener("click", () => {
+	setPanelOpen(false);
+});
+
+for (const tab of panelTabs) {
+	tab.addEventListener("click", () => {
+		const tabName = tab.getAttribute("data-panel-tab") || "session";
+		setPanelTab(tabName);
+	});
+}
+
+panelStartSessionButton.addEventListener("click", () => {
+	void startSessionFromPanel();
+});
+
+panelStopSessionButton.addEventListener("click", () => {
+	void stopSessionFromPanel();
+});
+
+panelRestartSessionButton.addEventListener("click", () => {
+	void restartSessionFromPanel();
+});
+
+panelRefreshButton.addEventListener("click", () => {
+	void syncPanelState(true).then(() => {
+		void syncSavedSessions(true);
+	});
+});
+
+panelProjectAddButton.addEventListener("click", () => {
+	void addProjectFromPanel();
 });
 
 const handleViewportChange = () => {
@@ -527,6 +1152,10 @@ window.addEventListener("beforeunload", () => {
 	if (socket && socket.readyState <= WebSocket.OPEN) {
 		socket.close();
 	}
+	if (panelMessageTimeout) {
+		window.clearTimeout(panelMessageTimeout);
+		panelMessageTimeout = null;
+	}
 	stopMomentumScroll();
 	if (pinAnimationFrame !== null) {
 		window.cancelAnimationFrame(pinAnimationFrame);
@@ -551,6 +1180,9 @@ window.addEventListener("beforeunload", () => {
 updateViewportHeight();
 refreshMobileUiMode();
 updateTerminalTypography();
+setPanelTab("session");
+renderPanel();
+void syncPanelState(true);
 fitTerminal();
 terminal.focus();
 terminal.writeln("pi web terminal ready.");
