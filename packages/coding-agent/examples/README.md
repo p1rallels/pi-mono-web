@@ -18,6 +18,12 @@ Example extensions demonstrating:
 - External integrations (SSH, file watchers, system theme sync)
 - Custom providers (Anthropic with custom streaming, GitLab Duo)
 
+### [rpc-web/](rpc-web/)
+Browser-hosted RPC integration example:
+- Local Node host that spawns `pi --mode rpc`
+- Browser UI using SSE + JSON commands
+- Extension UI protocol coverage (`select`, `confirm`, `input`, `editor`, status/widgets/title)
+
 ## Documentation
 
 - [SDK Reference](sdk/README.md)
