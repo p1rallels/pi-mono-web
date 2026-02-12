@@ -1,10 +1,9 @@
 const bootstrap = window.__PI_WEB_BOOTSTRAP__;
-const statusEl = document.getElementById("status");
-const detailEl = document.getElementById("detail");
 const reconnectButton = document.getElementById("reconnect");
 const terminalEl = document.getElementById("terminal");
 const terminalWrapperEl = document.getElementById("terminal-wrapper");
 const mobileKeybarEl = document.getElementById("mobile-keybar");
+const connectionDotEl = document.getElementById("connection-dot");
 const mobileKeyButtons = Array.from(document.querySelectorAll("#mobile-keybar [data-key]"));
 const mobileWidthQuery = window.matchMedia("(max-width: 900px)");
 const coarsePointerQuery = window.matchMedia("(pointer: coarse)");
@@ -13,24 +12,18 @@ if (!bootstrap || typeof bootstrap.token !== "string" || typeof bootstrap.wsPath
 	throw new Error("Invalid web bootstrap configuration");
 }
 
-if (!statusEl || !detailEl || !reconnectButton || !terminalEl || !terminalWrapperEl || !mobileKeybarEl) {
+if (!reconnectButton || !terminalEl || !terminalWrapperEl || !mobileKeybarEl || !connectionDotEl) {
 	throw new Error("Missing required web terminal UI elements");
 }
 
 const MOBILE_KEY_SEQUENCES = {
 	esc: "\u001b",
-	tab: "\t",
 	up: "\u001b[A",
 	down: "\u001b[B",
-	left: "\u001b[D",
-	right: "\u001b[C",
 	enter: "\r",
-	ctrlc: "\u0003",
 };
 
 const TOUCH_SCROLL_PIXELS_PER_LINE = 18;
-const HORIZONTAL_SWIPE_THRESHOLD = 54;
-const VERTICAL_SWIPE_TOLERANCE = 24;
 const TAP_FOCUS_THRESHOLD = 8;
 
 const terminal = new Terminal({
@@ -58,6 +51,10 @@ let isStopped = false;
 let fitTimer = null;
 let mobileUiEnabled = false;
 let touchSession = null;
+let lockedMobileFontSize = null;
+let pinAnimationFrame = null;
+let pinnedViewportUntil = 0;
+let reconnectingManually = false;
 
 function isTouchDevice() {
 	return navigator.maxTouchPoints > 0 || coarsePointerQuery.matches;
@@ -76,6 +73,7 @@ function setMobileUiEnabled(enabled) {
 	mobileKeybarEl.setAttribute("aria-hidden", mobileUiEnabled ? "false" : "true");
 	if (!mobileUiEnabled) {
 		touchSession = null;
+		lockedMobileFontSize = null;
 	}
 }
 
@@ -83,10 +81,11 @@ function refreshMobileUiMode() {
 	setMobileUiEnabled(isTouchDevice() && mobileWidthQuery.matches);
 }
 
-function setStatus(state, detail) {
-	statusEl.textContent = state;
-	statusEl.className = `status ${state}`;
-	detailEl.textContent = detail || "";
+function setStatus(state) {
+	const isConnected = state === "connected" || state === "running";
+	connectionDotEl.classList.toggle("connected", isConnected);
+	connectionDotEl.setAttribute("aria-label", isConnected ? "Connected" : "Disconnected");
+	reconnectButton.setAttribute("title", isConnected ? "Reconnect (connected)" : "Reconnect");
 }
 
 function socketUrl() {
@@ -125,19 +124,7 @@ function fitTerminal() {
 	sendResize();
 }
 
-function getTerminalViewportElement() {
-	return terminalEl.querySelector(".xterm-viewport");
-}
-
-function shouldKeepViewportPinned() {
-	const viewportEl = getTerminalViewportElement();
-	if (!viewportEl) return true;
-	return viewportEl.scrollTop + viewportEl.clientHeight >= viewportEl.scrollHeight - 8;
-}
-
-function desiredFontSize() {
-	if (!mobileUiEnabled) return 14;
-
+function computeMobileFontSize() {
 	const viewport = window.visualViewport;
 	const width = Math.round(viewport ? viewport.width : window.innerWidth);
 	const height = Math.round(viewport ? viewport.height : window.innerHeight);
@@ -147,8 +134,16 @@ function desiredFontSize() {
 	if (width <= 390) fontSize = 12;
 	if (height <= 640) fontSize = Math.min(fontSize, 12);
 	if (height <= 520) fontSize = Math.min(fontSize, 11);
-
 	return fontSize;
+}
+
+function desiredFontSize() {
+	if (!mobileUiEnabled) return 14;
+	const computed = computeMobileFontSize();
+	if (lockedMobileFontSize === null || computed < lockedMobileFontSize) {
+		lockedMobileFontSize = computed;
+	}
+	return lockedMobileFontSize;
 }
 
 function updateTerminalTypography() {
@@ -176,6 +171,36 @@ function scheduleReconnect() {
 	}, 800);
 }
 
+function getTerminalViewportElement() {
+	return terminalEl.querySelector(".xterm-viewport");
+}
+
+function shouldKeepViewportPinned() {
+	const viewportEl = getTerminalViewportElement();
+	if (!viewportEl) return true;
+	return viewportEl.scrollTop + viewportEl.clientHeight >= viewportEl.scrollHeight - 8;
+}
+
+function pinViewportFor(durationMs = 150) {
+	if (!mobileUiEnabled) return;
+	pinnedViewportUntil = performance.now() + durationMs;
+
+	if (pinAnimationFrame !== null) {
+		return;
+	}
+
+	const step = () => {
+		if (performance.now() >= pinnedViewportUntil) {
+			pinAnimationFrame = null;
+			return;
+		}
+		terminal.scrollToBottom();
+		pinAnimationFrame = window.requestAnimationFrame(step);
+	};
+
+	step();
+}
+
 function handleServerMessage(rawData) {
 	let message;
 	try {
@@ -194,14 +219,13 @@ function handleServerMessage(rawData) {
 	}
 
 	if (message.type === "status" && typeof message.state === "string") {
-		const detail = typeof message.reason === "string" ? message.reason : "";
 		if (message.state === "running") {
-			setStatus("connected", detail || "Connected to interactive pi session");
+			setStatus("connected");
 		} else if (message.state === "starting") {
-			setStatus("connecting", detail || "Starting interactive session...");
+			setStatus("connecting");
 		} else if (message.state === "stopped") {
 			isStopped = true;
-			setStatus("stopped", detail || "Session stopped");
+			setStatus("stopped");
 			clearReconnectTimer();
 		}
 		return;
@@ -215,14 +239,15 @@ function handleServerMessage(rawData) {
 function connect() {
 	if (isStopped) return;
 	clearReconnectTimer();
-	setStatus("connecting", "Connecting terminal bridge...");
+	setStatus("connecting");
 
 	const wsUrl = socketUrl();
 	const nextSocket = new WebSocket(wsUrl);
 	socket = nextSocket;
 
 	nextSocket.addEventListener("open", () => {
-		setStatus("connected", "Connected");
+		reconnectingManually = false;
+		setStatus("connected");
 		sendResize();
 	});
 
@@ -233,7 +258,11 @@ function connect() {
 
 	nextSocket.addEventListener("close", () => {
 		if (isStopped) return;
-		setStatus("disconnected", "Connection closed, retrying...");
+		if (reconnectingManually) {
+			reconnectingManually = false;
+			return;
+		}
+		setStatus("disconnected");
 		scheduleReconnect();
 	});
 
@@ -247,12 +276,11 @@ function handleMobileKeyClick(event) {
 	if (!key) return;
 	const sequence = MOBILE_KEY_SEQUENCES[key];
 	if (!sequence) return;
+
 	const keepPinned = shouldKeepViewportPinned();
 	sendInput(sequence, { focus: false });
 	if (keepPinned) {
-		window.requestAnimationFrame(() => {
-			terminal.scrollToBottom();
-		});
+		pinViewportFor(150);
 	}
 }
 
@@ -311,14 +339,7 @@ function handleTouchEnd() {
 
 	if (Math.abs(totalX) <= TAP_FOCUS_THRESHOLD && Math.abs(totalY) <= TAP_FOCUS_THRESHOLD) {
 		terminal.focus();
-		return;
 	}
-
-	if (Math.abs(totalX) < HORIZONTAL_SWIPE_THRESHOLD || Math.abs(totalY) > VERTICAL_SWIPE_TOLERANCE) {
-		return;
-	}
-
-	sendInput(totalX > 0 ? MOBILE_KEY_SEQUENCES.right : MOBILE_KEY_SEQUENCES.left, { focus: false });
 }
 
 terminalWrapperEl.addEventListener("touchstart", handleTouchStart, { passive: true });
@@ -331,10 +352,24 @@ terminal.onData((data) => {
 });
 
 reconnectButton.addEventListener("click", () => {
-	if (socket && socket.readyState === WebSocket.OPEN) {
+	isStopped = false;
+	clearReconnectTimer();
+
+	if (socket && (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING)) {
+		reconnectingManually = true;
+		try {
+			socket.close(1000, "manual reconnect");
+		} catch {
+			// Ignore close failures.
+		}
+		window.setTimeout(() => {
+			if (!isStopped) {
+				connect();
+			}
+		}, 40);
 		return;
 	}
-	isStopped = false;
+
 	connect();
 });
 
@@ -368,6 +403,10 @@ window.addEventListener("beforeunload", () => {
 	if (socket && socket.readyState <= WebSocket.OPEN) {
 		socket.close();
 	}
+	if (pinAnimationFrame !== null) {
+		window.cancelAnimationFrame(pinAnimationFrame);
+		pinAnimationFrame = null;
+	}
 	if (window.visualViewport) {
 		window.visualViewport.removeEventListener("resize", handleViewportChange);
 		window.visualViewport.removeEventListener("scroll", handleViewportChange);
@@ -391,5 +430,5 @@ fitTerminal();
 terminal.focus();
 terminal.writeln("pi web terminal ready.");
 terminal.writeln("Waiting for session output...\r\n");
-setStatus("connecting", "Booting interactive session...");
+setStatus("connecting");
 connect();

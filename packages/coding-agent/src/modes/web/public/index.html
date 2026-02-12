@@ -13,7 +13,6 @@
 				--text: #e5e7eb;
 				--muted: #93a0b7;
 				--good: #34d399;
-				--warn: #f59e0b;
 				--bad: #f87171;
 				--app-height: 100vh;
 			}
@@ -44,39 +43,11 @@
 				width: 100%;
 				max-width: 100vw;
 				height: var(--app-height);
-				padding: max(8px, env(safe-area-inset-top)) max(10px, env(safe-area-inset-right))
-					calc(10px + env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left));
+				padding: max(6px, env(safe-area-inset-top)) max(8px, env(safe-area-inset-right))
+					calc(8px + env(safe-area-inset-bottom)) max(8px, env(safe-area-inset-left));
 				display: grid;
-				grid-template-rows: auto 1fr auto;
-				gap: 10px;
-			}
-			.topbar {
-				background: color-mix(in srgb, var(--panel) 88%, transparent);
-				border: 1px solid var(--line);
-				border-radius: 10px;
-				padding: 8px 10px;
-				display: grid;
-				grid-template-columns: auto auto 1fr auto;
-				align-items: center;
-				gap: 12px;
-				font-size: 12px;
-			}
-			.title {
-				font-weight: 600;
-			}
-			.status {
-				font-weight: 700;
-				justify-self: start;
-			}
-			.status.connecting {
-				color: var(--warn);
-			}
-			.status.connected {
-				color: var(--good);
-			}
-			.status.disconnected,
-			.status.stopped {
-				color: var(--bad);
+				grid-template-rows: 1fr auto;
+				gap: 8px;
 			}
 			button {
 				background: #1d2638;
@@ -125,7 +96,7 @@
 			}
 			.mobile-keybar-row {
 				display: grid;
-				grid-template-columns: repeat(4, minmax(0, 1fr));
+				grid-template-columns: repeat(3, minmax(0, 1fr));
 				gap: 6px;
 			}
 			.mobile-keybar button {
@@ -135,38 +106,32 @@
 				border-radius: 7px;
 				background: #152036;
 			}
+			.mobile-keybar .icon-button {
+				font-size: 16px;
+				font-weight: 700;
+				padding-top: 2px;
+			}
+			.mobile-status {
+				display: flex;
+				align-items: center;
+				justify-content: center;
+			}
+			.connection-dot {
+				width: 11px;
+				height: 11px;
+				border-radius: 999px;
+				background: var(--bad);
+				box-shadow: 0 0 0 1px #00000066;
+			}
+			.connection-dot.connected {
+				background: var(--good);
+			}
 			body.mobile-ui-enabled .mobile-keybar {
 				display: grid;
 			}
 			@media (max-width: 900px) {
 				main {
-					gap: 8px;
-				}
-				.topbar {
-					grid-template-columns: 1fr auto;
-					grid-template-areas:
-						"title status"
-						"detail detail"
-						"reconnect reconnect";
-					gap: 7px;
-				}
-				.title {
-					grid-area: title;
-				}
-				#status {
-					grid-area: status;
-					justify-self: end;
-				}
-				#detail {
-					grid-area: detail;
-					white-space: normal;
-					display: -webkit-box;
-					-webkit-line-clamp: 2;
-					-webkit-box-orient: vertical;
-				}
-				#reconnect {
-					grid-area: reconnect;
-					width: 100%;
+					gap: 6px;
 				}
 				#terminal-wrapper {
 					padding: 4px;
@@ -176,27 +141,21 @@
 	</head>
 	<body>
 		<main>
-			<section class="topbar">
-				<div class="title">pi web terminal</div>
-				<div id="status" class="status connecting">connecting</div>
-				<div id="detail" class="detail">Waiting for terminal session...</div>
-				<button id="reconnect" type="button">Reconnect</button>
-			</section>
 			<section id="terminal-wrapper">
 				<div id="terminal"></div>
 			</section>
 			<section id="mobile-keybar" class="mobile-keybar" aria-label="Mobile terminal controls" aria-hidden="true">
 				<div class="mobile-keybar-row">
 					<button type="button" data-key="esc">Esc</button>
-					<button type="button" data-key="tab">Tab</button>
 					<button type="button" data-key="up">Up</button>
 					<button type="button" data-key="down">Down</button>
 				</div>
 				<div class="mobile-keybar-row">
-					<button type="button" data-key="left">Left</button>
-					<button type="button" data-key="right">Right</button>
+					<button id="reconnect" class="icon-button" type="button" title="Reconnect" aria-label="Reconnect">↻</button>
+					<div class="mobile-status">
+						<span id="connection-dot" class="connection-dot" aria-label="Disconnected"></span>
+					</div>
 					<button type="button" data-key="enter">Enter</button>
-					<button type="button" data-key="ctrlc">Ctrl+C</button>
 				</div>
 			</section>
 		</main>
