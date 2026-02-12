@@ -31,6 +31,7 @@ const MOBILE_KEY_SEQUENCES = {
 const TOUCH_SCROLL_PIXELS_PER_LINE = 18;
 const HORIZONTAL_SWIPE_THRESHOLD = 54;
 const VERTICAL_SWIPE_TOLERANCE = 24;
+const TAP_FOCUS_THRESHOLD = 8;
 
 const terminal = new Terminal({
 	cursorBlink: true,
@@ -104,9 +105,11 @@ function sendMessage(message) {
 	socket.send(JSON.stringify(message));
 }
 
-function sendInput(data) {
+function sendInput(data, options = {}) {
 	sendMessage({ type: "input", data });
-	terminal.focus();
+	if (options.focus === true) {
+		terminal.focus();
+	}
 }
 
 function sendResize() {
@@ -120,6 +123,39 @@ function sendResize() {
 function fitTerminal() {
 	fitAddon.fit();
 	sendResize();
+}
+
+function getTerminalViewportElement() {
+	return terminalEl.querySelector(".xterm-viewport");
+}
+
+function shouldKeepViewportPinned() {
+	const viewportEl = getTerminalViewportElement();
+	if (!viewportEl) return true;
+	return viewportEl.scrollTop + viewportEl.clientHeight >= viewportEl.scrollHeight - 8;
+}
+
+function desiredFontSize() {
+	if (!mobileUiEnabled) return 14;
+
+	const viewport = window.visualViewport;
+	const width = Math.round(viewport ? viewport.width : window.innerWidth);
+	const height = Math.round(viewport ? viewport.height : window.innerHeight);
+
+	let fontSize = 14;
+	if (width <= 430) fontSize = 13;
+	if (width <= 390) fontSize = 12;
+	if (height <= 640) fontSize = Math.min(fontSize, 12);
+	if (height <= 520) fontSize = Math.min(fontSize, 11);
+
+	return fontSize;
+}
+
+function updateTerminalTypography() {
+	const nextFontSize = desiredFontSize();
+	if (terminal.options.fontSize !== nextFontSize) {
+		terminal.options.fontSize = nextFontSize;
+	}
 }
 
 function scheduleFit(delay = 70) {
@@ -211,14 +247,19 @@ function handleMobileKeyClick(event) {
 	if (!key) return;
 	const sequence = MOBILE_KEY_SEQUENCES[key];
 	if (!sequence) return;
-	sendInput(sequence);
+	const keepPinned = shouldKeepViewportPinned();
+	sendInput(sequence, { focus: false });
+	if (keepPinned) {
+		window.requestAnimationFrame(() => {
+			terminal.scrollToBottom();
+		});
+	}
 }
 
 for (const button of mobileKeyButtons) {
 	button.addEventListener("pointerdown", (event) => {
 		if (!mobileUiEnabled) return;
 		event.preventDefault();
-		terminal.focus();
 	});
 	button.addEventListener("click", handleMobileKeyClick);
 }
@@ -234,7 +275,6 @@ function handleTouchStart(event) {
 		scrollRemainder: 0,
 		didScroll: false,
 	};
-	terminal.focus();
 }
 
 function handleTouchMove(event) {
@@ -268,11 +308,17 @@ function handleTouchEnd() {
 	touchSession = null;
 
 	if (didScroll) return;
+
+	if (Math.abs(totalX) <= TAP_FOCUS_THRESHOLD && Math.abs(totalY) <= TAP_FOCUS_THRESHOLD) {
+		terminal.focus();
+		return;
+	}
+
 	if (Math.abs(totalX) < HORIZONTAL_SWIPE_THRESHOLD || Math.abs(totalY) > VERTICAL_SWIPE_TOLERANCE) {
 		return;
 	}
 
-	sendInput(totalX > 0 ? MOBILE_KEY_SEQUENCES.right : MOBILE_KEY_SEQUENCES.left);
+	sendInput(totalX > 0 ? MOBILE_KEY_SEQUENCES.right : MOBILE_KEY_SEQUENCES.left, { focus: false });
 }
 
 terminalWrapperEl.addEventListener("touchstart", handleTouchStart, { passive: true });
@@ -295,6 +341,7 @@ reconnectButton.addEventListener("click", () => {
 const handleViewportChange = () => {
 	updateViewportHeight();
 	refreshMobileUiMode();
+	updateTerminalTypography();
 	scheduleFit(45);
 };
 
@@ -339,6 +386,7 @@ window.addEventListener("beforeunload", () => {
 
 updateViewportHeight();
 refreshMobileUiMode();
+updateTerminalTypography();
 fitTerminal();
 terminal.focus();
 terminal.writeln("pi web terminal ready.");
