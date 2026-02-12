@@ -84,6 +84,8 @@ const FRAME_DURATION_MS = 16.67;
 const SESSION_REHYDRATE_LIMIT = 220;
 const SESSION_REHYDRATE_MAX_PAGES = 400;
 const MAX_REHYDRATE_CHECKPOINTS = 32;
+const SYNCING_STATUS_DELAY_MS = 380;
+const RECOVERED_STATUS_HOLD_MS = 1800;
 
 const terminal = new Terminal({
 	cursorBlink: true,
@@ -131,7 +133,28 @@ let panelMessageTimeout = null;
 let panelTransientMessage = null;
 let serverReplayGate = null;
 let serverReplayGateCounter = 0;
+let panelSessionSyncState = "live";
+let panelSessionSyncTimer = null;
+let panelLastRestoreMeta = null;
 const rehydrateCheckpoints = new Map();
+
+const DEBUG_MODE = (() => {
+	try {
+		const params = new URLSearchParams(window.location.search);
+		const queryValue = params.get("debug");
+		if (queryValue === "1" || queryValue === "true") {
+			window.localStorage.setItem("pi_web_debug", "1");
+			return true;
+		}
+		if (queryValue === "0" || queryValue === "false") {
+			window.localStorage.removeItem("pi_web_debug");
+			return false;
+		}
+		return window.localStorage.getItem("pi_web_debug") === "1";
+	} catch {
+		return false;
+	}
+})();
 
 function isTouchDevice() {
 	return navigator.maxTouchPoints > 0 || coarsePointerQuery.matches;
@@ -247,6 +270,32 @@ function setPanelNotice(message) {
 		panelTransientMessage = null;
 		renderPanel();
 	}, 2800);
+	renderPanel();
+}
+
+function setPanelSessionSyncState(state, options = {}) {
+	panelSessionSyncState = state;
+	if (options.restoreMeta && typeof options.restoreMeta === "object") {
+		panelLastRestoreMeta = options.restoreMeta;
+	}
+
+	if (panelSessionSyncTimer !== null) {
+		window.clearTimeout(panelSessionSyncTimer);
+		panelSessionSyncTimer = null;
+	}
+
+	if (state === "recovered") {
+		const holdMs =
+			typeof options.holdMs === "number" && Number.isFinite(options.holdMs) && options.holdMs > 0
+				? options.holdMs
+				: RECOVERED_STATUS_HOLD_MS;
+		panelSessionSyncTimer = window.setTimeout(() => {
+			panelSessionSyncTimer = null;
+			panelSessionSyncState = "live";
+			renderPanel();
+		}, holdMs);
+	}
+
 	renderPanel();
 }
 
@@ -507,7 +556,22 @@ function renderSavedSessions() {
 function renderPanel() {
 	const hostState = panelHostState || { state: "unknown", reason: undefined, connected: false };
 	const reasonText = hostState.reason ? ` (${hostState.reason})` : "";
-	panelStatusTextEl.textContent = `State: ${hostState.state}${reasonText}`;
+	const syncLabel =
+		panelSessionSyncState === "syncing" ? "Syncing" : panelSessionSyncState === "recovered" ? "Recovered" : "Live";
+	panelStatusTextEl.textContent = `State: ${hostState.state}${reasonText} • ${syncLabel}`;
+	if (DEBUG_MODE && panelLastRestoreMeta && typeof panelLastRestoreMeta === "object") {
+		const restoreMode = typeof panelLastRestoreMeta.mode === "string" ? panelLastRestoreMeta.mode : "unknown";
+		const restorePages = asNonNegativeInteger(panelLastRestoreMeta.pagesFetched);
+		const restoreDuration = asNonNegativeInteger(panelLastRestoreMeta.durationMs);
+		const fallbackReason =
+			typeof panelLastRestoreMeta.fallbackReason === "string" ? panelLastRestoreMeta.fallbackReason : null;
+		const pagesText = restorePages === null ? "?" : `${restorePages}`;
+		const durationText = restoreDuration === null ? "?" : `${restoreDuration}`;
+		panelStatusTextEl.textContent += ` • restore ${restoreMode}, ${pagesText}p, ${durationText}ms`;
+		if (fallbackReason) {
+			panelStatusTextEl.textContent += `, fallback:${fallbackReason}`;
+		}
+	}
 	if (panelTransientMessage) {
 		panelStatusTextEl.textContent += ` • ${panelTransientMessage}`;
 	}
@@ -1011,13 +1075,17 @@ async function streamRehydrateForSession(sessionPath, gateId, options = {}) {
 	let revision = null;
 	let pageCount = 0;
 	let didReset = false;
+	let fallbackReason = null;
 
-	const restartFromZero = () => {
+	const restartFromZero = (reason) => {
 		cursor = 0;
 		pageCount = 0;
 		revision = null;
 		resetTerminalViewport();
 		didReset = true;
+		if (fallbackReason === null && typeof reason === "string") {
+			fallbackReason = reason;
+		}
 	};
 
 	if (options.resetTerminal !== false) {
@@ -1042,7 +1110,7 @@ async function streamRehydrateForSession(sessionPath, gateId, options = {}) {
 			return null;
 		}
 		if (responseCursor !== cursor) {
-			restartFromZero();
+			restartFromZero("cursor_mismatch");
 			continue;
 		}
 
@@ -1050,14 +1118,14 @@ async function streamRehydrateForSession(sessionPath, gateId, options = {}) {
 			if (revision === null) {
 				revision = response.revision;
 			} else if (revision !== response.revision) {
-				restartFromZero();
+				restartFromZero("revision_changed");
 				continue;
 			}
 		}
 
 		const totalEntries = asNonNegativeInteger(response.totalEntries);
 		if (totalEntries !== null && cursor > totalEntries) {
-			restartFromZero();
+			restartFromZero("cursor_gt_total");
 			continue;
 		}
 
@@ -1071,6 +1139,8 @@ async function streamRehydrateForSession(sessionPath, gateId, options = {}) {
 				cursor: totalEntries !== null ? totalEntries : cursor,
 				revision,
 				didReset,
+				pagesFetched: pageCount + 1,
+				fallbackReason,
 			};
 		}
 
@@ -1079,7 +1149,7 @@ async function streamRehydrateForSession(sessionPath, gateId, options = {}) {
 	}
 
 	terminal.writeln("\r\n[web] Session rehydrate hit page limit.\r\n");
-	return { cursor, revision, didReset };
+	return { cursor, revision, didReset, pagesFetched: pageCount, fallbackReason };
 }
 
 async function finalizeServerReplayGate(gateId, options = {}) {
@@ -1097,18 +1167,47 @@ async function finalizeServerReplayGate(gateId, options = {}) {
 		gate.queue = [];
 		const checkpoint = getRehydrateCheckpoint(sessionPath);
 		const useIncremental = options.forceFull !== true && checkpoint !== null;
+		let syncingShown = false;
+		const syncingTimer = window.setTimeout(() => {
+			syncingShown = true;
+			setPanelSessionSyncState("syncing");
+		}, SYNCING_STATUS_DELAY_MS);
+		const startAt = Date.now();
 		try {
 			const checkpointResult = await streamRehydrateForSession(sessionPath, gateId, {
 				startCursor: useIncremental ? checkpoint.cursor : 0,
 				resetTerminal: !useIncremental,
 			});
+			window.clearTimeout(syncingTimer);
 			if (checkpointResult && asNonNegativeInteger(checkpointResult.cursor) !== null) {
 				setRehydrateCheckpoint(sessionPath, checkpointResult);
 			}
+			const durationMs = Math.max(0, Date.now() - startAt);
+			const fallbackToFull = Boolean(useIncremental && checkpointResult && checkpointResult.didReset === true);
+			if (fallbackToFull && options.forceFull !== true) {
+				setPanelNotice("Session changed while reconnecting, resynced.");
+			}
+			const restoreMode = fallbackToFull ? "full" : useIncremental ? "incremental" : "full";
+			const restoreMeta = {
+				mode: restoreMode,
+				pagesFetched: checkpointResult && asNonNegativeInteger(checkpointResult.pagesFetched),
+				durationMs,
+				fallbackReason: checkpointResult ? checkpointResult.fallbackReason : null,
+			};
+			const shouldShowRecovered = syncingShown || fallbackToFull || DEBUG_MODE;
+			if (shouldShowRecovered) {
+				setPanelSessionSyncState("recovered", { restoreMeta, holdMs: RECOVERED_STATUS_HOLD_MS });
+			} else {
+				setPanelSessionSyncState("live", { restoreMeta });
+			}
 		} catch (error) {
+			window.clearTimeout(syncingTimer);
 			gate.queue = fallbackQueue.concat(gate.queue);
 			terminal.writeln(`\r\n[web] ${panelErrorMessage(error, "Failed to reconstruct session history")}\r\n`);
+			setPanelSessionSyncState("live");
 		}
+	} else {
+		setPanelSessionSyncState("live");
 	}
 
 	flushServerReplayGate(gateId);
@@ -1375,6 +1474,10 @@ window.addEventListener("beforeunload", () => {
 	if (panelMessageTimeout) {
 		window.clearTimeout(panelMessageTimeout);
 		panelMessageTimeout = null;
+	}
+	if (panelSessionSyncTimer !== null) {
+		window.clearTimeout(panelSessionSyncTimer);
+		panelSessionSyncTimer = null;
 	}
 	stopMomentumScroll();
 	if (pinAnimationFrame !== null) {
