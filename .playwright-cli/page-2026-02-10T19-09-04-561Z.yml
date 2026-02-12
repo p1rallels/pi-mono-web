@@ -1,0 +1,203 @@
+- generic [ref=e1]:
+  - main [ref=e2]:
+    - generic [ref=e7]:
+      - textbox "Terminal input" [active] [ref=e8]
+      - generic:
+        - generic:
+          - generic: pi
+          - generic: v0.52.9
+        - generic:
+          - generic: escape
+          - generic: to interrupt
+        - generic:
+          - generic: ctrl+c
+          - generic: to clear
+        - generic:
+          - generic: ctrl+c twice
+          - generic: to exit
+        - generic:
+          - generic: ctrl+d
+          - generic: to exit (empty)
+        - generic:
+          - generic: ctrl+z
+          - generic: to suspend
+        - generic:
+          - generic: ctrl+k
+          - generic: to delete to end
+        - generic:
+          - generic: shift+tab
+          - generic: to cycle thinking level
+        - generic:
+          - generic: ctrl+p/shift+ctrl+p
+          - generic: to cycle models
+        - generic:
+          - generic: ctrl+l
+          - generic: to select model
+        - generic:
+          - generic: ctrl+o
+          - generic: to expand tools
+        - generic:
+          - generic: ctrl+t
+          - generic: to expand thinking
+        - generic:
+          - generic: ctrl+g
+          - generic: for external editor
+        - generic:
+          - generic: /
+          - generic: for commands
+        - generic:
+          - generic: "!"
+          - generic: to run bash
+        - generic:
+          - generic: "!!"
+          - generic: to run bash (no context)
+        - generic:
+          - generic: alt+enter
+          - generic: to queue follow-up
+        - generic:
+          - generic: alt+up
+          - generic: to edit all queued messages
+        - generic:
+          - generic: ctrl+v
+          - generic: to paste image
+        - generic:
+          - generic: drop files
+          - generic: to attach
+        - generic:
+          - generic: "[Context]"
+        - generic:
+          - generic: ~/Desktop/cc/CLAUDE.md
+        - generic:
+          - generic: ~/Desktop/cc/takopi-app/AGENTS.md
+        - generic:
+          - generic: ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+        - generic:
+          - generic: ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+        - generic:
+          - generic: ~/Desktop/cc/takopi-app (master)
+        - generic:
+          - generic: 0.0%/203k (auto) (openrouter) z-ai/glm-4.7 • thinking off
+  - complementary [ref=e9]:
+    - generic [ref=e10]:
+      - strong [ref=e11]: Session Menu
+      - button [ref=e12] [cursor=pointer]: Close
+    - tablist [ref=e13]:
+      - tab [selected] [ref=e14] [cursor=pointer]: Session
+      - tab [ref=e15] [cursor=pointer]: Repos
+    - tabpanel [ref=e17]:
+      - generic [ref=e18]:
+        - heading [level=3] [ref=e19]: Status
+        - generic [ref=e20]: "State: running"
+        - generic [ref=e21]: /Users/reddot/Desktop/cc/takopi-app • openrouter/z-ai/glm-4.7
+        - generic [ref=e22]:
+          - button [ref=e23] [cursor=pointer]: Start
+          - button [ref=e24] [cursor=pointer]: Stop
+        - generic [ref=e25]:
+          - button [ref=e26] [cursor=pointer]: Restart
+          - button [ref=e27] [cursor=pointer]: Refresh
+      - generic [ref=e28]:
+        - heading [level=3] [ref=e29]: Defaults
+        - generic [ref=e30]:
+          - generic [ref=e31]: Provider
+          - textbox [ref=e32]:
+            - /placeholder: openrouter
+            - text: openrouter
+        - generic [ref=e33]:
+          - generic [ref=e34]: Model
+          - textbox [ref=e35]:
+            - /placeholder: z-ai/glm-4.7
+            - text: z-ai/glm-4.7
+        - generic [ref=e36]:
+          - checkbox [ref=e37]
+          - generic [ref=e38]:
+            - text: Use
+            - code [ref=e39]: "--no-session"
+        - generic [ref=e40]: Start uses selected repo if one is active, otherwise host working directory.
+      - generic [ref=e41]:
+        - heading [level=3] [ref=e42]: Recent Sessions
+        - generic [ref=e43]: Recent launches across repos from this web host.
+        - generic [ref=e44]:
+          - generic [ref=e45]:
+            - generic [ref=e46]: takopi-app
+            - generic [ref=e47]: /Users/reddot/Desktop/cc/takopi-app
+            - generic [ref=e48]: running • openrouter/z-ai/glm-4.7
+            - generic [ref=e49]:
+              - button [ref=e50] [cursor=pointer]: Relaunch
+              - button [ref=e51] [cursor=pointer]: Select
+          - generic [ref=e52]:
+            - generic [ref=e53]: pi-main
+            - generic [ref=e54]: /Users/reddot/Desktop/cc/pi-mono
+            - generic [ref=e55]: stopped • openrouter/z-ai/glm-4.7
+            - generic [ref=e56]:
+              - button [ref=e57] [cursor=pointer]: Relaunch
+              - button [ref=e58] [cursor=pointer]: Select
+          - generic [ref=e59]:
+            - generic [ref=e60]: Host directory
+            - generic [ref=e61]: /Users/reddot/Desktop/cc/pi-mono
+            - generic [ref=e62]: running • openrouter/z-ai/glm-4.7
+            - generic [ref=e63]:
+              - button [ref=e64] [cursor=pointer]: Relaunch
+              - button [disabled] [ref=e65] [cursor=pointer]: Select
+          - generic [ref=e66]:
+            - generic [ref=e67]: Host directory
+            - generic [ref=e68]: /Users/reddot/Desktop/cc/pi-mono
+            - generic [ref=e69]: stopped • openrouter/z-ai/glm-4.7
+            - generic [ref=e70]:
+              - button [ref=e71] [cursor=pointer]: Relaunch
+              - button [disabled] [ref=e72] [cursor=pointer]: Select
+          - generic [ref=e73]:
+            - generic [ref=e74]: test-dir
+            - generic [ref=e75]: /Users/reddot/Desktop/cc/pi-mono/test-dir
+            - generic [ref=e76]: stopped • openrouter/z-ai/glm-4.7
+            - generic [ref=e77]:
+              - button [ref=e78] [cursor=pointer]: Relaunch
+              - button [ref=e79] [cursor=pointer]: Select
+          - generic [ref=e80]:
+            - generic [ref=e81]: takopi-app
+            - generic [ref=e82]: /Users/reddot/Desktop/cc/takopi-app
+            - generic [ref=e83]: stopped • openrouter/z-ai/glm-4.7
+            - generic [ref=e84]:
+              - button [ref=e85] [cursor=pointer]: Relaunch
+              - button [ref=e86] [cursor=pointer]: Select
+          - generic [ref=e87]:
+            - generic [ref=e88]: test-dir
+            - generic [ref=e89]: /Users/reddot/Desktop/cc/pi-mono/test-dir
+            - generic [ref=e90]: stopped • openrouter/z-ai/glm-4.7
+            - generic [ref=e91]:
+              - button [ref=e92] [cursor=pointer]: Relaunch
+              - button [ref=e93] [cursor=pointer]: Select
+          - generic [ref=e94]:
+            - generic [ref=e95]: test-dir
+            - generic [ref=e96]: /Users/reddot/Desktop/cc/pi-mono/test-dir
+            - generic [ref=e97]: stopped • openrouter/z-ai/glm-4.7
+            - generic [ref=e98]:
+              - button [ref=e99] [cursor=pointer]: Relaunch
+              - button [ref=e100] [cursor=pointer]: Select
+          - generic [ref=e101]:
+            - generic [ref=e102]: test-dir
+            - generic [ref=e103]: /Users/reddot/Desktop/cc/pi-mono/test-dir
+            - generic [ref=e104]: stopped • openrouter/z-ai/glm-4.7
+            - generic [ref=e105]:
+              - button [ref=e106] [cursor=pointer]: Relaunch
+              - button [ref=e107] [cursor=pointer]: Select
+          - generic [ref=e108]:
+            - generic [ref=e109]: takopi-app
+            - generic [ref=e110]: /Users/reddot/Desktop/cc/takopi-app
+            - generic [ref=e111]: stopped • openrouter/z-ai/glm-4.7
+            - generic [ref=e112]:
+              - button [ref=e113] [cursor=pointer]: Relaunch
+              - button [ref=e114] [cursor=pointer]: Select
+          - generic [ref=e115]:
+            - generic [ref=e116]: test-dir
+            - generic [ref=e117]: /Users/reddot/Desktop/cc/pi-mono/test-dir
+            - generic [ref=e118]: stopped • openrouter/z-ai/glm-4.7
+            - generic [ref=e119]:
+              - button [ref=e120] [cursor=pointer]: Relaunch
+              - button [ref=e121] [cursor=pointer]: Select
+          - generic [ref=e122]:
+            - generic [ref=e123]: test-dir
+            - generic [ref=e124]: /Users/reddot/Desktop/cc/pi-mono/test-dir
+            - generic [ref=e125]: stopped • openrouter/z-ai/glm-4.7
+            - generic [ref=e126]:
+              - button [ref=e127] [cursor=pointer]: Relaunch
+              - button [ref=e128] [cursor=pointer]: Select

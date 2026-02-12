@@ -1,0 +1,102 @@
+- generic [ref=e1]:
+  - main [ref=e2]:
+    - generic [ref=e7]:
+      - textbox "Terminal input" [active] [ref=e8]
+      - generic:
+        - generic:
+          - generic: Let me think about this CSS file. I should be concise and direct per the instructions, and use lowercase letters with
+        - generic:
+          - generic: minimal text.
+        - generic:
+          - generic: "The CSS:"
+        - generic:
+          - generic: "-"
+          - generic: Imports default theme from mini-lit
+        - generic:
+          - generic: "-"
+          - generic: Sets up Tailwind 4 with @source directive (with biome ignore)
+        - generic:
+          - generic: "-"
+          - generic: Imports tailwindcss (with biome ignore comment "fuck you" lol)
+        - generic:
+          - generic: "-"
+          - generic: Sets up custom scrollbars
+        - generic:
+          - generic: "-"
+          - generic: Fixes cursor for dialog close buttons
+        - generic:
+          - generic: "-"
+          - generic: Adds shimmer animation for thinking text
+        - generic:
+          - generic: "-"
+          - generic: Styles user message containers with gradient backgrounds
+        - generic:
+          - generic: The biome ignore comments are funny - they explicitly disable linter rules that complain about Tailwind's newer
+        - generic:
+          - generic: syntax. The scrollbar styling is clean - thin, uses CSS variables. The user message container has a nice gradient with
+        - generic:
+          - generic: backdrop blur.
+        - generic:
+          - generic: I should keep this short.
+        - generic:
+          - generic: clean setup. imports mini-lit default theme + tailwind 4. biome ignore comments are funny but legit - the @source and
+        - generic:
+          - generic: "@import syntax are new tailwind 4 stuff that linters complain about."
+        - generic:
+          - generic: custom scrollbars are nice - thin, uses CSS vars, consistent with the theme. user message gradient (orange tones) with
+        - generic:
+          - generic: backdrop blur looks polished. shimmer animation for "thinking" states is a nice touch for AI chat.
+        - generic:
+          - generic: the dialog cursor fix suggests they're fighting with some browser/library default that makes close buttons
+        - generic:
+          - generic: unclickable.
+        - generic:
+          - generic: "overall: minimal, functional, theme-aware. nothing crazy."
+        - generic:
+          - generic: ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+        - generic:
+          - generic: ────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+        - generic:
+          - generic: ~/Desktop/cc/pi-mono (main)
+        - generic:
+          - generic: ↑38k ↓1.7k R24k $0.023 4.6%/203k (auto) (openrouter) z-ai/glm-4.7 • thinking off
+  - complementary [ref=e11]:
+    - generic [ref=e12]:
+      - strong [ref=e13]: Session Menu
+      - button [ref=e14] [cursor=pointer]: Close
+    - tablist [ref=e15]:
+      - tab [selected] [ref=e16] [cursor=pointer]: Session
+      - tab [ref=e17] [cursor=pointer]: Repos
+    - tabpanel [ref=e19]:
+      - generic [ref=e20]:
+        - heading [level=3] [ref=e21]: Status
+        - generic [ref=e22]: "State: stopped (Stopped from web menu)"
+        - generic [ref=e23]: No active session
+        - generic [ref=e24]:
+          - button [ref=e25] [cursor=pointer]: Start
+          - button [disabled] [ref=e26] [cursor=pointer]: Stop
+        - generic [ref=e27]:
+          - button [disabled] [ref=e28] [cursor=pointer]: Restart
+          - button [ref=e29] [cursor=pointer]: Refresh
+      - generic [ref=e30]:
+        - heading [level=3] [ref=e31]: Defaults
+        - generic [ref=e32]:
+          - generic [ref=e33]: Provider
+          - textbox [ref=e34]:
+            - /placeholder: openrouter
+            - text: openrouter
+        - generic [ref=e35]:
+          - generic [ref=e36]: Model
+          - textbox [ref=e37]:
+            - /placeholder: z-ai/glm-4.7
+            - text: z-ai/glm-4.7
+        - generic [ref=e38]:
+          - checkbox [ref=e39]
+          - generic [ref=e40]:
+            - text: Use
+            - code [ref=e41]: "--no-session"
+        - generic [ref=e42]: Start uses selected repo if one is active, otherwise host working directory.
+      - generic [ref=e43]:
+        - heading [level=3] [ref=e44]: Saved Sessions
+        - generic [ref=e45]: Uses selected repo from the Repos tab.
+        - generic [ref=e47]: Select a repo in Repos first.

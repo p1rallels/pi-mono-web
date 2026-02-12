@@ -1,0 +1,183 @@
+- generic [ref=e1]:
+  - main [ref=e2]:
+    - generic [ref=e7]:
+      - textbox "Terminal input" [active] [ref=e8]
+      - generic:
+        - generic:
+          - generic: ctrl+o
+          - generic: to expand tools
+        - generic:
+          - generic: ctrl+t
+          - generic: to expand thinking
+        - generic:
+          - generic: ctrl+g
+          - generic: for external editor
+        - generic:
+          - generic: /
+          - generic: for commands
+        - generic:
+          - generic: "!"
+          - generic: to run bash
+        - generic:
+          - generic: "!!"
+          - generic: to run bash (no context)
+        - generic:
+          - generic: alt+enter
+          - generic: to queue follow-up
+        - generic:
+          - generic: alt+up
+          - generic: to edit all queued messages
+        - generic:
+          - generic: ctrl+v
+          - generic: to paste image
+        - generic:
+          - generic: drop files
+          - generic: to attach
+        - generic:
+          - generic: "[Context]"
+        - generic:
+          - generic: ~/Desktop/cc/CLAUDE.md
+        - generic:
+          - generic: ~/Desktop/cc/pi-mono/AGENTS.md
+        - generic:
+          - generic: "[Prompts]"
+        - generic:
+          - generic: project
+        - generic:
+          - generic: /cl
+        - generic:
+          - generic: /is
+        - generic:
+          - generic: /pr
+        - generic:
+          - generic: "[Extensions]"
+        - generic:
+          - generic: project
+        - generic:
+          - generic: ~/Desktop/cc/pi-mono/.pi/extensions/agent-end.ts
+        - generic:
+          - generic: ~/Desktop/cc/pi-mono/.pi/extensions/diff.ts
+        - generic:
+          - generic: ~/Desktop/cc/pi-mono/.pi/extensions/files.ts
+        - generic:
+          - generic: ~/Desktop/cc/pi-mono/.pi/extensions/prompt-url-widget.ts
+        - generic:
+          - generic: ~/Desktop/cc/pi-mono/.pi/extensions/redraws.ts
+        - generic:
+          - generic: ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+        - generic:
+          - generic: ──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
+        - generic:
+          - generic: ~/Desktop/cc/pi-mono (main)
+        - generic:
+          - generic: 0.0%/203k (auto) (openrouter) z-ai/glm-4.7 • thinking off
+  - complementary [ref=e11]:
+    - generic [ref=e12]:
+      - strong [ref=e13]: Session Menu
+      - button [ref=e14] [cursor=pointer]: Close
+    - tablist [ref=e15]:
+      - tab [selected] [ref=e16] [cursor=pointer]: Session
+      - tab [ref=e17] [cursor=pointer]: Repos
+    - tabpanel [ref=e19]:
+      - generic [ref=e20]:
+        - heading [level=3] [ref=e21]: Status
+        - generic [ref=e22]: "State: running"
+        - generic [ref=e23]: /Users/reddot/Desktop/cc/pi-mono • openrouter/z-ai/glm-4.7
+        - generic [ref=e24]:
+          - button [ref=e25] [cursor=pointer]: Start
+          - button [ref=e26] [cursor=pointer]: Stop
+        - generic [ref=e27]:
+          - button [ref=e28] [cursor=pointer]: Restart
+          - button [ref=e29] [cursor=pointer]: Refresh
+      - generic [ref=e30]:
+        - heading [level=3] [ref=e31]: Defaults
+        - generic [ref=e32]:
+          - generic [ref=e33]: Provider
+          - textbox [ref=e34]:
+            - /placeholder: openrouter
+            - text: openrouter
+        - generic [ref=e35]:
+          - generic [ref=e36]: Model
+          - textbox [ref=e37]:
+            - /placeholder: z-ai/glm-4.7
+            - text: z-ai/glm-4.7
+        - generic [ref=e38]:
+          - checkbox [ref=e39]
+          - generic [ref=e40]:
+            - text: Use
+            - code [ref=e41]: "--no-session"
+        - generic [ref=e42]: Start uses selected repo if one is active, otherwise host working directory.
+      - generic [ref=e43]:
+        - heading [level=3] [ref=e44]: Saved Sessions
+        - generic [ref=e45]: Uses selected repo from the Repos tab.
+        - generic [ref=e46]:
+          - generic [ref=e47]:
+            - generic [ref=e48]: Session ab56fa71
+            - generic [ref=e49]: /Users/reddot/.pi/agent/sessions/--Users-reddot-Desktop-cc-pi-mono--/2026-02-10T17-51-11-852Z_ab56fa71-5a5d-413a-8218-50683a31bab9.jsonl
+            - generic [ref=e50]: 2 msgs • 38m ago
+            - generic [ref=e51]:
+              - button [ref=e52] [cursor=pointer]: Resume
+              - button [ref=e53] [cursor=pointer]: Copy Prompt
+          - generic [ref=e54]:
+            - generic [ref=e55]: Session 8cfe1e71
+            - generic [ref=e56]: /Users/reddot/.pi/agent/sessions/--Users-reddot-Desktop-cc-pi-mono--/2026-02-10T17-41-35-231Z_8cfe1e71-29a1-44e8-9ad8-d7b7f6ce7a06.jsonl
+            - generic [ref=e57]: 4 msgs • 47m ago
+            - generic [ref=e58]:
+              - button [ref=e59] [cursor=pointer]: Resume
+              - button [ref=e60] [cursor=pointer]: Copy Prompt
+          - generic [ref=e61]:
+            - generic [ref=e62]: Session 9b8d45c6
+            - generic [ref=e63]: /Users/reddot/.pi/agent/sessions/--Users-reddot-Desktop-cc-pi-mono--/2026-02-10T06-48-57-924Z_9b8d45c6-d405-4e7b-9572-d7a535522f61.jsonl
+            - generic [ref=e64]: 18 msgs • 10h ago
+            - generic [ref=e65]:
+              - button [ref=e66] [cursor=pointer]: Resume
+              - button [ref=e67] [cursor=pointer]: Copy Prompt
+          - generic [ref=e68]:
+            - generic [ref=e69]: Session 24db080e
+            - generic [ref=e70]: /Users/reddot/.pi/agent/sessions/--Users-reddot-Desktop-cc-pi-mono--/2026-02-10T06-03-26-512Z_24db080e-3dff-426d-9c9d-ded24a0cef9c.jsonl
+            - generic [ref=e71]: 13 msgs • 11h ago
+            - generic [ref=e72]:
+              - button [ref=e73] [cursor=pointer]: Resume
+              - button [ref=e74] [cursor=pointer]: Copy Prompt
+          - generic [ref=e75]:
+            - generic [ref=e76]: Session 734812a1
+            - generic [ref=e77]: /Users/reddot/.pi/agent/sessions/--Users-reddot-Desktop-cc-pi-mono--/2026-02-10T07-11-07-815Z_734812a1-26e7-48de-8934-62bb8d35fc99.jsonl
+            - generic [ref=e78]: 2 msgs • 11h ago
+            - generic [ref=e79]:
+              - button [ref=e80] [cursor=pointer]: Resume
+              - button [ref=e81] [cursor=pointer]: Copy Prompt
+          - generic [ref=e82]:
+            - generic [ref=e83]: Session bac874f3
+            - generic [ref=e84]: /Users/reddot/.pi/agent/sessions/--Users-reddot-Desktop-cc-pi-mono--/2026-02-10T07-03-56-624Z_bac874f3-6517-4ed0-8364-77a691511691.jsonl
+            - generic [ref=e85]: 9 msgs • 11h ago
+            - generic [ref=e86]:
+              - button [ref=e87] [cursor=pointer]: Resume
+              - button [ref=e88] [cursor=pointer]: Copy Prompt
+          - generic [ref=e89]:
+            - generic [ref=e90]: Session 7043a380
+            - generic [ref=e91]: /Users/reddot/.pi/agent/sessions/--Users-reddot-Desktop-cc-pi-mono--/2026-02-10T06-34-19-522Z_7043a380-e261-405c-b58c-82eab6b25cce.jsonl
+            - generic [ref=e92]: 10 msgs • 11h ago
+            - generic [ref=e93]:
+              - button [ref=e94] [cursor=pointer]: Resume
+              - button [ref=e95] [cursor=pointer]: Copy Prompt
+          - generic [ref=e96]:
+            - generic [ref=e97]: Session 10f32d26
+            - generic [ref=e98]: /Users/reddot/.pi/agent/sessions/--Users-reddot-Desktop-cc-pi-mono--/2026-02-10T05-58-41-098Z_10f32d26-9618-45a0-abc7-a4230370c2ae.jsonl
+            - generic [ref=e99]: 12 msgs • 12h ago
+            - generic [ref=e100]:
+              - button [ref=e101] [cursor=pointer]: Resume
+              - button [ref=e102] [cursor=pointer]: Copy Prompt
+          - generic [ref=e103]:
+            - generic [ref=e104]: Session 82941a0b
+            - generic [ref=e105]: /Users/reddot/.pi/agent/sessions/--Users-reddot-Desktop-cc-pi-mono--/2026-02-10T05-55-06-802Z_82941a0b-b422-484a-b5ac-994231b1cd04.jsonl
+            - generic [ref=e106]: 6 msgs • 12h ago
+            - generic [ref=e107]:
+              - button [ref=e108] [cursor=pointer]: Resume
+              - button [ref=e109] [cursor=pointer]: Copy Prompt
+          - generic [ref=e110]:
+            - generic [ref=e111]: Session 8fa6f864
+            - generic [ref=e112]: /Users/reddot/.pi/agent/sessions/--Users-reddot-Desktop-cc-pi-mono--/2026-02-10T05-44-06-797Z_8fa6f864-043b-414a-bc94-127e38c53435.jsonl
+            - generic [ref=e113]: 2 msgs • 12h ago
+            - generic [ref=e114]:
+              - button [ref=e115] [cursor=pointer]: Resume
+              - button [ref=e116] [cursor=pointer]: Copy Prompt

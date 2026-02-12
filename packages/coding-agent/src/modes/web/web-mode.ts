@@ -59,11 +59,16 @@ interface WebServerPongMessage {
 	type: "pong";
 }
 
+interface WebServerResetMessage {
+	type: "reset";
+}
+
 type WebServerToClientMessage =
 	| WebServerOutputMessage
 	| WebServerStatusMessage
 	| WebServerErrorMessage
-	| WebServerPongMessage;
+	| WebServerPongMessage
+	| WebServerResetMessage;
 
 interface ResolvedChildInvocation {
 	command: string;
@@ -156,6 +161,13 @@ interface WebSavedSessionSummary {
 	modified: string;
 	messageCount: number;
 	firstMessage: string;
+}
+
+interface WebRunningSession {
+	session: WebActiveSession;
+	launch: WebLaunchConfig;
+	pty: nodePty.IPty;
+	outputBuffer: string;
 }
 
 const DEFAULT_HOST = "127.0.0.1";
@@ -589,7 +601,9 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 	let activeClient: ws.WebSocket | null = null;
 	let reconnectTimer: NodeJS.Timeout | undefined;
 	let ptyProcess: nodePty.IPty | null = null;
-	let ptyGeneration = 0;
+	const runningSessions = new Map<string, WebRunningSession>();
+	let latestClientCols = 120;
+	let latestClientRows = 36;
 	let shuttingDown = false;
 	let activeSession: WebActiveSession | null = null;
 	let activeLaunchForRestart: WebLaunchConfig = {
@@ -654,55 +668,173 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 		await persistRecentSessions();
 	};
 
-	const stopActiveSession = async (reason: string, state: WebRecentSessionState): Promise<boolean> => {
-		if (!ptyProcess) {
-			updateState("stopped", reason);
-			return false;
-		}
+	const upsertRecentSessionRunning = async (sessionInfo: WebActiveSession): Promise<void> => {
+		const existingIndex = recentSessions.findIndex((entry) => entry.id === sessionInfo.id);
+		const nextEntry: WebRecentSession = {
+			id: sessionInfo.id,
+			projectId: sessionInfo.projectId,
+			cwd: sessionInfo.cwd,
+			provider: sessionInfo.provider,
+			model: sessionInfo.model,
+			sessionPath: sessionInfo.sessionPath,
+			noSession: sessionInfo.noSession,
+			startedAt: sessionInfo.startedAt,
+			state: "running",
+		};
 
-		const pty = ptyProcess;
-		ptyProcess = null;
-		ptyGeneration += 1;
+		if (existingIndex >= 0) {
+			recentSessions.splice(existingIndex, 1);
+		}
+		recentSessions.unshift(nextEntry);
+		trimRecentSessions();
+		await persistRecentSessions();
+	};
+
+	const launchSignature = (launch: WebLaunchConfig): string => {
+		return JSON.stringify({
+			projectId: launch.projectId ?? "",
+			cwd: launch.cwd,
+			provider: launch.provider ?? "",
+			model: launch.model ?? "",
+			sessionPath: launch.sessionPath ?? "",
+			noSession: launch.sessionPath ? false : launch.noSession,
+		});
+	};
+
+	const findRunningSessionByLaunch = (launch: WebLaunchConfig): WebRunningSession | undefined => {
+		const signature = launchSignature(launch);
+		for (const running of runningSessions.values()) {
+			if (launchSignature(running.launch) === signature) {
+				return running;
+			}
+		}
+		return undefined;
+	};
+
+	const activateRunningSession = (
+		running: WebRunningSession,
+		params?: { resetBuffer?: boolean; reason?: string },
+	): void => {
+		activeSession = running.session;
+		activeLaunchForRestart = running.launch;
+		launchDefaults = {
+			provider: running.launch.provider,
+			model: running.launch.model,
+			sessionPath: running.launch.sessionPath,
+			noSession: running.launch.noSession,
+		};
+		ptyProcess = running.pty;
+		outputBuffer = running.outputBuffer;
+
 		try {
-			pty.kill();
+			running.pty.resize(latestClientCols, latestClientRows);
 		} catch {
 			// Best effort.
 		}
 
-		if (activeSession) {
-			await markRecentSessionState(activeSession.id, state);
-			activeSession = null;
+		if (params?.resetBuffer === true) {
+			sendWsMessage(activeClient, { type: "reset" });
+			if (outputBuffer.length > 0) {
+				sendWsMessage(activeClient, { type: "output", data: outputBuffer });
+			}
 		}
-		updateState("stopped", reason);
+
+		updateState("running", params?.reason);
+	};
+
+	const stopSessionById = async (
+		sessionId: string,
+		reason: string,
+		state: WebRecentSessionState,
+	): Promise<boolean> => {
+		const running = runningSessions.get(sessionId);
+		if (!running) return false;
+
+		runningSessions.delete(sessionId);
+		try {
+			running.pty.kill();
+		} catch {
+			// Best effort.
+		}
+		await markRecentSessionState(sessionId, state);
+
+		if (activeSession?.id === sessionId) {
+			activeSession = null;
+			ptyProcess = null;
+			outputBuffer = "";
+			updateState("stopped", reason);
+		}
+
 		return true;
+	};
+
+	const stopActiveSession = async (reason: string, state: WebRecentSessionState): Promise<boolean> => {
+		const sessionId = activeSession?.id;
+		if (!sessionId) {
+			updateState("stopped", reason);
+			return false;
+		}
+
+		const stopped = await stopSessionById(sessionId, reason, state);
+		if (stopped) {
+			return true;
+		}
+
+		activeSession = null;
+		ptyProcess = null;
+		outputBuffer = "";
+		updateState("stopped", reason);
+		return false;
+	};
+
+	const stopAllSessions = async (reason: string, state: WebRecentSessionState): Promise<void> => {
+		const sessionIds = [...runningSessions.keys()];
+		for (const sessionId of sessionIds) {
+			await stopSessionById(sessionId, reason, state);
+		}
+
+		activeSession = null;
+		ptyProcess = null;
+		outputBuffer = "";
+		updateState("stopped", reason);
 	};
 
 	const startPtySession = async (
 		launch: WebLaunchConfig,
-		params?: { resetBuffer?: boolean; announce?: boolean },
+		params?: { resetBuffer?: boolean; forceNew?: boolean },
 	): Promise<WebActiveSession> => {
-		await stopActiveSession("Switching session", "stopped");
+		const normalizedLaunch: WebLaunchConfig = {
+			...launch,
+			noSession: launch.sessionPath ? false : launch.noSession,
+		};
+
+		if (params?.forceNew !== true) {
+			const runningMatch = findRunningSessionByLaunch(normalizedLaunch);
+			if (runningMatch) {
+				activateRunningSession(runningMatch, { resetBuffer: params?.resetBuffer === true });
+				await upsertRecentSessionRunning(runningMatch.session);
+				return runningMatch.session;
+			}
+		} else if (activeSession) {
+			await stopActiveSession("Restarting session", "stopped");
+		}
 
 		if (!helperPrepared) {
 			await ensureNodePtyHelperExecutable();
 			helperPrepared = true;
 		}
 
-		if (params?.resetBuffer === true) {
-			outputBuffer = "";
-		}
-
-		const childArgs = buildChildArgsForLaunch(baseChildArgs, launch);
+		const childArgs = buildChildArgsForLaunch(baseChildArgs, normalizedLaunch);
 		const childInvocation = resolveChildInvocation(childArgs);
-		updateState("starting", `Starting in ${launch.cwd}`);
+		updateState("starting", `Starting in ${normalizedLaunch.cwd}`);
 
 		let spawned: nodePty.IPty;
 		try {
 			spawned = nodePty.spawn(childInvocation.command, childInvocation.args, {
 				name: process.env.TERM || "xterm-256color",
-				cols: 120,
-				rows: 36,
-				cwd: launch.cwd,
+				cols: latestClientCols,
+				rows: latestClientRows,
+				cwd: normalizedLaunch.cwd,
 				env: {
 					...process.env,
 					TERM: process.env.TERM || "xterm-256color",
@@ -714,65 +846,58 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 			throw new Error(message);
 		}
 
-		ptyProcess = spawned;
-		const generation = ++ptyGeneration;
-
 		const sessionId = randomBytes(12).toString("hex");
 		const sessionInfo: WebActiveSession = {
 			id: sessionId,
-			projectId: launch.projectId,
-			cwd: launch.cwd,
-			provider: launch.provider,
-			model: launch.model,
-			sessionPath: launch.sessionPath,
-			noSession: launch.noSession,
+			projectId: normalizedLaunch.projectId,
+			cwd: normalizedLaunch.cwd,
+			provider: normalizedLaunch.provider,
+			model: normalizedLaunch.model,
+			sessionPath: normalizedLaunch.sessionPath,
+			noSession: normalizedLaunch.noSession,
 			startedAt: nowIso8601(),
 		};
 
-		activeSession = sessionInfo;
-		activeLaunchForRestart = launch;
-		launchDefaults = {
-			provider: launch.provider,
-			model: launch.model,
-			sessionPath: launch.sessionPath,
-			noSession: launch.noSession,
+		const running: WebRunningSession = {
+			session: sessionInfo,
+			launch: normalizedLaunch,
+			pty: spawned,
+			outputBuffer: "",
 		};
-
-		recentSessions.unshift({
-			id: sessionInfo.id,
-			projectId: sessionInfo.projectId,
-			cwd: sessionInfo.cwd,
-			provider: sessionInfo.provider,
-			model: sessionInfo.model,
-			sessionPath: sessionInfo.sessionPath,
-			noSession: sessionInfo.noSession,
-			startedAt: sessionInfo.startedAt,
-			state: "running",
-		});
-		trimRecentSessions();
-		await persistRecentSessions();
+		runningSessions.set(sessionInfo.id, running);
+		activateRunningSession(running, { resetBuffer: params?.resetBuffer === true });
+		await upsertRecentSessionRunning(sessionInfo);
 
 		spawned.onData((data) => {
-			if (generation !== ptyGeneration || ptyProcess !== spawned) return;
-			appendOutput(data);
-		});
-
-		spawned.onExit((event) => {
-			if (generation !== ptyGeneration || ptyProcess !== spawned) return;
-			ptyProcess = null;
-			const reason = `CLI exited (code ${event.exitCode}${event.signal ? `, signal ${event.signal}` : ""})`;
-			updateState("stopped", reason);
-			const nextState: WebRecentSessionState = event.exitCode === 0 ? "stopped" : "error";
-			if (activeSession && activeSession.id === sessionInfo.id) {
-				void markRecentSessionState(sessionInfo.id, nextState);
-				activeSession = null;
+			const current = runningSessions.get(sessionInfo.id);
+			if (!current || current.pty !== spawned) return;
+			current.outputBuffer += data;
+			if (current.outputBuffer.length > MAX_BUFFER_CHARS) {
+				current.outputBuffer = current.outputBuffer.slice(current.outputBuffer.length - MAX_BUFFER_CHARS);
+			}
+			if (activeSession?.id === sessionInfo.id) {
+				appendOutput(data);
+				current.outputBuffer = outputBuffer;
 			}
 		});
 
-		updateState("running");
-		if (params?.announce === true) {
-			appendOutput(`\r\n[web] Started session in ${launch.cwd}\r\n`);
-		}
+		spawned.onExit((event) => {
+			const current = runningSessions.get(sessionInfo.id);
+			if (!current || current.pty !== spawned) return;
+			runningSessions.delete(sessionInfo.id);
+
+			const reason = `CLI exited (code ${event.exitCode}${event.signal ? `, signal ${event.signal}` : ""})`;
+			const nextState: WebRecentSessionState = event.exitCode === 0 ? "stopped" : "error";
+			void markRecentSessionState(sessionInfo.id, nextState);
+
+			if (activeSession?.id === sessionInfo.id) {
+				activeSession = null;
+				ptyProcess = null;
+				outputBuffer = "";
+				updateState("stopped", reason);
+			}
+		});
+
 		return sessionInfo;
 	};
 
@@ -888,7 +1013,7 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 		clearReconnectTimer();
 
 		await enqueueLifecycle(async () => {
-			await stopActiveSession(reason, "stopped");
+			await stopAllSessions(reason, "stopped");
 		});
 
 		updateState("stopped", reason);
@@ -1124,7 +1249,7 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 
 				try {
 					const started = await enqueueLifecycle(async () => {
-						return await startPtySession(launch, { resetBuffer: true, announce: true });
+						return await startPtySession(launch, { resetBuffer: true });
 					});
 					safeJson(res, 200, { ok: true, sessionId: started.id });
 				} catch (error) {
@@ -1160,7 +1285,7 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 
 				try {
 					const started = await enqueueLifecycle(async () => {
-						return await startPtySession(launch, { resetBuffer: true, announce: true });
+						return await startPtySession(launch, { resetBuffer: true, forceNew: true });
 					});
 					safeJson(res, 200, { ok: true, sessionId: started.id });
 				} catch (error) {
@@ -1225,8 +1350,11 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 		activeClient = client;
 		clearReconnectTimer();
 		sendWsMessage(client, { type: "status", state: sessionState, reason: sessionReason });
-		if (outputBuffer.length > 0) {
-			sendWsMessage(client, { type: "output", data: outputBuffer });
+		if (activeSession) {
+			sendWsMessage(client, { type: "reset" });
+			if (outputBuffer.length > 0) {
+				sendWsMessage(client, { type: "output", data: outputBuffer });
+			}
 		}
 
 		client.on("message", (payload) => {
@@ -1243,6 +1371,8 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 			}
 
 			if (message.type === "resize") {
+				latestClientCols = message.cols;
+				latestClientRows = message.rows;
 				try {
 					ptyProcess?.resize(message.cols, message.rows);
 				} catch {
@@ -1286,7 +1416,7 @@ export async function runWebMode(options: WebModeOptions): Promise<void> {
 	let startupError: Error | null = null;
 	try {
 		await enqueueLifecycle(async () => {
-			await startPtySession(initialLaunch, { resetBuffer: false, announce: false });
+			await startPtySession(initialLaunch, { resetBuffer: false });
 		});
 	} catch (error) {
 		startupError = error instanceof Error ? error : new Error("Failed to start terminal session.");

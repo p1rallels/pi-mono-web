@@ -195,7 +195,7 @@ function setPanelTab(tabName) {
 		const sectionName = section.getAttribute("data-panel-section");
 		section.hidden = sectionName !== panelActiveTab;
 	}
-	if (panelActiveTab === "session") {
+	if (panelActiveTab === "repos") {
 		void syncSavedSessions(false);
 	}
 }
@@ -289,6 +289,14 @@ function renderPanelProjects() {
 		if (project.id === panelSelectedProjectId) {
 			item.classList.add("active");
 		}
+		item.addEventListener("click", (event) => {
+			if (event.target instanceof Element && event.target.closest("button")) {
+				return;
+			}
+			panelSelectedProjectId = project.id;
+			renderPanel();
+			void syncSavedSessions(true);
+		});
 
 		const title = document.createElement("div");
 		title.className = "panel-item-title";
@@ -299,16 +307,7 @@ function renderPanelProjects() {
 		path.textContent = project.path;
 
 		const row = document.createElement("div");
-		row.className = "panel-row-3";
-
-		const useButton = document.createElement("button");
-		useButton.type = "button";
-		useButton.textContent = "Use";
-		useButton.addEventListener("click", () => {
-			panelSelectedProjectId = project.id;
-			renderPanel();
-			void syncSavedSessions(true);
-		});
+		row.className = "panel-row";
 
 		const startButton = document.createElement("button");
 		startButton.type = "button";
@@ -325,7 +324,7 @@ function renderPanelProjects() {
 			void deleteProject(project.id);
 		});
 
-		row.append(useButton, startButton, deleteButton);
+		row.append(startButton, deleteButton);
 		item.append(title, path, row);
 		panelProjectListEl.appendChild(item);
 	}
@@ -370,13 +369,14 @@ function renderPanelRecent() {
 
 		const useButton = document.createElement("button");
 		useButton.type = "button";
-		useButton.textContent = "Use Repo";
+		useButton.textContent = "Select";
 		useButton.disabled = !session.projectId;
 		useButton.addEventListener("click", () => {
 			if (!session.projectId) return;
 			panelSelectedProjectId = session.projectId;
 			renderPanel();
 			void syncSavedSessions(true);
+			setPanelNotice(`Selected ${session.projectId}`);
 		});
 
 		row.append(relaunchButton, useButton);
@@ -892,6 +892,16 @@ function handleServerMessage(rawData) {
 		return;
 	}
 
+	if (message.type === "reset") {
+		stopMomentumScroll();
+		terminal.reset();
+		if (typeof terminal.clear === "function") {
+			terminal.clear();
+		}
+		scheduleFit(10);
+		return;
+	}
+
 	if (message.type === "status" && typeof message.state === "string") {
 		if (message.state === "running") {
 			setStatus("connected");
@@ -1115,6 +1125,7 @@ panelRestartSessionButton.addEventListener("click", () => {
 panelRefreshButton.addEventListener("click", () => {
 	void syncPanelState(true).then(() => {
 		void syncSavedSessions(true);
+		setPanelNotice("Refreshed");
 	});
 });
 
